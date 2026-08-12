@@ -59,17 +59,22 @@ devices, pass the serial to every tool.
   [l,t,r,b] → ((l+r)/2, (t+b)/2).
 - **Stale dump?** \`phone_dump_ui\` reports the focused window — if the elements
   don't match it, retry the dump before acting.
-- **Can't see images?** three-tier order: (1) your own model, if it supports
-  image input; (2) the user's \`vision\` subagent, if they have one set up;
-  (3) \`phone-vision\` as the final fallback. Pass the screenshot file path.
+- **Can't see images?** use the VISION TIERS in strict order — never skip a
+  tier: (1) your own model, if it supports image input — always first;
+  (2) only if it can't: the user's \`vision\` subagent, if they have one set
+  up; (3) only if neither exists: \`phone-vision\` (MiMo) as the final
+  fallback. Pass the screenshot file path. Never jump straight to tier 3.
 - **Non-dumpable apps** (Flutter/canvas — e.g. Truecaller): \`phone_dump_ui\`
-  fails. Skip straight to \`phone_screenshot\` + the vision fallback — don't
+  fails. Skip straight to \`phone_screenshot\` + the vision tiers — don't
   waste dump retries.
 - **Clearing a text field**: taps on an in-app clear (X) button are unreliable
   in Flutter/WebView fields — instead send \`am broadcast -a ADB_CLEAR_TEXT\`
   via \`phone_shell\` (ADBKeyboard), then verify the field is empty before
   typing.
-- **Type**: tap the field first. Unicode via ADBKeyboard when available.
+- **Type**: tap the field first. \`phone_type\` PREFERS ADBKeyboard (full
+  Unicode, IME restored after) and only falls back to \`input text\` (ASCII)
+  when ADBKeyboard is unavailable — keep that preference; never bypass
+  ADBKeyboard by sending raw \`input text\` yourself.
 - **Screen off/locked**: \`phone_key power\`, swipe up twice.
 - **Scroll**: vertical swipes; \`durationMs\` 100 = fling. Scroll until the target
   appears, then dump.
@@ -174,6 +179,71 @@ user to \`/phone-connect\` in the TUI or plug in via USB.
   back out and re-dump before continuing.
 - **Stale dump**: confirm the foreground app (\`dumpsys window | grep
   mCurrentFocus\`) if the dump doesn't match what you expect.
+- **No change after an action**: do NOT repeat it — re-dump, check
+  \`phone_logcat\`, reconsider.`,
+  }),
+  makeSkill({
+    id: "camera",
+    name: "camera",
+    description:
+      "Automate the camera on the user's Android phone via the mobile-use tools — open the camera app, switch between front/rear lenses, take photos, and pull them to the laptop. Use whenever the user asks to take a photo, selfie, or picture, or open the camera app.",
+    content: `# Camera Automation (via mobile-use)
+
+The phone must be connected: check \`phone_devices\` first; if none, guide the
+user to \`/phone-connect\` in the TUI or plug in via USB.
+
+## Launch — package, not launcher icons
+
+1. Find the package: \`phone_shell\` → \`pm list packages | grep -i camera\`
+   (Samsung: \`com.sec.android.app.camera\`).
+2. \`phone_open\` with that package. Launcher-icon taps drift between screens
+   (the dock moved between dumps today); package launch is exact.
+3. Confirm launch: \`phone_shell\` → \`dumpsys window | grep mCurrentFocus\`
+   should show \`...Camera\`.
+
+## Layout (Samsung One UI; other skins differ — re-dump before assuming)
+
+- Mode tabs: \`text="FUN/PORTRAIT/PHOTO/VIDEO/MORE"\` (SeekBar \`desc="Photo, Mode"\`).
+- Zoom: \`desc="Wide-angle, Button"\` / \`"Normal angle, Button"\` (0.5× / 1×).
+- Top row: \`desc="Flash"\`, \`"Filters"\`, \`"Face"\`; \`desc="Quick controls"\` (⋯).
+- Shutter: \`desc="Take picture"\`.
+- Last-photo preview: \`desc="View pictures and videos"\` (bottom-left).
+
+## Front vs rear — the dump is the truth
+
+- NEVER judge camera direction from the viewfinder scene. Today the front
+  camera was pointed at the ceiling (phone face-up) and looked identical to a
+  rear shot; vision models misjudged it twice.
+- The flip button's content-desc states what the button DOES:
+  - \`desc="Switch to rear camera"\` → front camera ACTIVE
+  - \`desc="Switch to front camera"\` → rear camera ACTIVE
+- Flip = tap the button's bounds center, re-dump, confirm the desc flipped.
+
+## Take the photo
+
+1. Tap shutter (\`desc="Take picture"\`) bounds center.
+2. Verify capture: thumbnail preview updates, or
+   \`ls -t /sdcard/DCIM/Camera/ | head -1\` shows a new \`YYYYMMDD_HHMMSS.jpg\`.
+3. Dark/covered viewfinder? Tell the user a shot of a lens cap isn't a result —
+   don't claim success.
+
+## Deliver the photo to the laptop
+
+1. \`ls -t /sdcard/DCIM/Camera/ | head -1\` → newest file.
+2. Pull with \`phone_adb\` (\`adb -s <serial> pull <remote> <local>\`), NOT
+   \`phone_shell\` — its result parser breaks on pull (stderr isn't a string).
+3. Open on the laptop: \`start "" "<path>"\` (Windows) or \`xdg-open\` (Linux).
+
+## When it misbehaves
+
+- **Vision gives wrong coords/direction**: screenshots are for understanding;
+  act only on \`phone_dump_ui\` bounds.
+- **"Selfie" with no person**: front camera ≠ user in frame. Warn and retake
+  when they're in front of the phone.
+- **Stray taps exit the camera**: confirm the focus window before every step.
+- **Permission dialog on first launch**: tap Allow.
+- **Low battery / screen off**: \`phone_key power\`, swipe up twice; warn on
+  critically low battery.
 - **No change after an action**: do NOT repeat it — re-dump, check
   \`phone_logcat\`, reconsider.`,
   }),

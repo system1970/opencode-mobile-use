@@ -218,7 +218,7 @@ export default Plugin.define({
       tools.add({
         name: "phone_screenshot",
         description:
-          "Capture the connected Android phone screen as a PNG image attachment. Use this before and after actions to observe and verify. Pass demo: true for a generated placeholder (no device needed). Pass small: true for a downscaled image (long edge 1600px) that costs fewer tokens — scale coordinates back to device pixels by the reported factor before tapping.\n\nIf your model can't see images, use this three-tier order: (1) your own model if it supports image input; (2) the user's own 'vision' subagent if they have one set up; (3) 'phone-vision' as the final fallback — pass the returned file path to describe it instead.",
+          "Capture the connected Android phone screen as a PNG image attachment. Use this before and after actions to observe and verify. Pass demo: true for a generated placeholder (no device needed). Pass small: true for a downscaled image (long edge 1600px) that costs fewer tokens — scale coordinates back to device pixels by the reported factor before tapping. Pass scale: N (integer divisor) to downscale by dividing the full resolution by N (e.g. scale: 2 = half size) — scale coordinates back to device pixels by the reported factor before tapping.\n\nIf your model can't see images, use the vision tiers in strict order — never skip a tier: (1) your own model if it supports image input; (2) only if it can't, the user's own 'vision' subagent if they have one set up; (3) only if neither exists, 'phone-vision' as the final fallback — pass the returned file path to describe it instead.",
         input: {
           type: "object",
           properties: {
@@ -231,10 +231,15 @@ export default Plugin.define({
               type: "boolean",
               description: "Downscale the screenshot (long edge 1600px) to save tokens",
             },
+            scale: {
+              type: "integer",
+              minimum: 2,
+              description: "Integer downscale divisor: 2 = half resolution, 3 = third, etc. Overrides small.",
+            },
           },
           additionalProperties: false,
         },
-        execute: async ({ serial, demo, small }: any) => {
+        execute: async ({ serial, demo, small, scale }: any) => {
           if (demo) {
             const dir = join(tmpdir(), "opencode-mobile-use")
             mkdirSync(dir, { recursive: true })
@@ -272,10 +277,13 @@ export default Plugin.define({
           mkdirSync(dir, { recursive: true })
           let png = shot.stdout
           let detail = dims ? ` (${dims[1]}x${dims[2]})` : ""
-          if (small) {
+          if (small || scale) {
             try {
               const decoded = decodePng(shot.stdout)
-              const scaled = downscale(decoded.rgba, decoded.width, decoded.height, 1600)
+              const maxLongEdge = scale
+                ? Math.max(1, Math.round(Math.max(decoded.width, decoded.height) / scale))
+                : 1600
+              const scaled = downscale(decoded.rgba, decoded.width, decoded.height, maxLongEdge)
               png = encodePng(scaled.rgba, scaled.width, scaled.height)
               const sx = decoded.width / scaled.width
               const sy = decoded.height / scaled.height
