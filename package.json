@@ -1,6 +1,6 @@
 {
   "name": "opencode-mobile-use",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Control an Android phone from OpenCode: live phone screen in the TUI sidebar, agent tools for taps/typing/swipes/UI dumps, app-specific skills, and a built-in phone-vision subagent. Works over USB, wireless, or Tailscale.",
   "type": "module",
   "exports": {
@@ -23,7 +23,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/system1970/opencode-mobile-use.git"
+    "url": "git+https://github.com/system1970/opencode-mobile-use.git"
   },
   "dependencies": {
     "@opencode-ai/plugin": "0.0.0-next-17292",

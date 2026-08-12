@@ -6,7 +6,13 @@ Control an Android phone from OpenCode — with a **live phone screen in the TUI
 
 - **Live sidebar screen** — the phone's display renders in the TUI sidebar (~36×30 cells via the terminal image protocol) and updates when the screen changes. Click it to open an enlarged full-resolution view.
 - **12 agent tools** — `phone_devices`, `phone_screenshot` (with SoM annotation + downscale), `phone_dump_ui` (stale-proof: stdout dump + focused-window cross-check + freshness cache), `phone_tap`, `phone_swipe`, `phone_type` (full Unicode via ADBKeyboard, with IME restore), `phone_key`, `phone_open`, `phone_install`, `phone_logcat`, `phone_shell`, `phone_adb`.
-- **App skills** — in-plugin skills encode hard-won failure modes for WhatsApp, X (Twitter), and the general mobile loop (look → act → verify).
+- **App skills** — in-plugin skills encode hard-won failure modes, with deep links preferred over UI walking and a resilient UI dump (it survives continuously-animating screens by pausing media briefly):
+  - `mobile-use` — the base loop (connect, deep links first, look → act → verify, vision tiers)
+  - `whatsapp` — find chats/groups, send messages, verify delivery
+  - `x` — timeline, direct messages, nav-drawer traps
+  - `camera` — front/rear via dump descs, take photos, pull them to the laptop
+  - `spotify` — play tracks via deep links (websearch → track ID → intent)
+  - `phone-call` — contacts DB lookup, confirm duplicates, dial, hang up
 - **`phone-vision` subagent** — a bundled vision agent (MiMo V2.5 Free) that describes phone screenshots when the active model can't see images.
 - **Remote access** — pair once over Tailscale (`/phone-connect-remote`) and the phone works from anywhere; auto-reconnects.
 - **`/phone-connect`** — guided wireless pairing in the TUI; **`/phone-disconnect`** turns off wireless debugging on the device so the disconnect actually sticks.
@@ -33,7 +39,11 @@ The plugin has two parts: the **server plugin** (tools/skills) and the **TUI plu
 
 Restart opencode2. The sidebar shows the phone status; the agent gets the `phone_*` tools.
 
-### Prerequisites
+### Try it
+
+Say things like "send *blehhh* to my campus group on WhatsApp", "play Shape of You at full volume", "take a selfie and open it on my laptop", or "call John — confirm which number first" — the agent drives the phone and verifies each step.
+
+## Prerequisites
 
 - Android phone with **USB debugging** enabled (Developer options)
 - `adb` on PATH, or set `MOBILE_ADB_PATH` / `ADB_PATH`
@@ -55,7 +65,7 @@ Restart opencode2. The sidebar shows the phone status; the agent gets the `phone
 ## Development
 
 ```bash
-git clone https://github.com/<you>/opencode-mobile-use.git
+git clone https://github.com/system1970/opencode-mobile-use.git
 cd opencode-mobile-use
 bun install
 bunx tsc --noEmit -p tsconfig.json   # typecheck
