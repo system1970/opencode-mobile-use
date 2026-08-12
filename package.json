@@ -21,6 +21,10 @@
     "tui"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/system1970/opencode-mobile-use.git"
+  },
   "dependencies": {
     "@opencode-ai/plugin": "0.0.0-next-17292",
     "@opentui/core": "0.0.0-20260808-9ecf7c0a",
