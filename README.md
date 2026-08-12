@@ -19,6 +19,8 @@ Control an Android phone from OpenCode — with a **live phone screen in the TUI
 
 ## Install
 
+### For Humans
+
 The plugin has two parts: the **server plugin** (tools/skills) and the **TUI plugin** (sidebar widget). Add it to both configs:
 
 **`~/.config/opencode/opencode.json(c)`** (or project config):
@@ -39,9 +41,75 @@ The plugin has two parts: the **server plugin** (tools/skills) and the **TUI plu
 
 Restart opencode2. The sidebar shows the phone status; the agent gets the `phone_*` tools.
 
-### Try it
+Then try saying things like "send *blehhh* to my campus group on WhatsApp", "play Shape of You at full volume", "take a selfie and open it on my laptop", or "call John — confirm which number first" — the agent drives the phone and verifies each step.
 
-Say things like "send *blehhh* to my campus group on WhatsApp", "play Shape of You at full volume", "take a selfie and open it on my laptop", or "call John — confirm which number first" — the agent drives the phone and verifies each step.
+<details>
+<summary>For LLM Agents</summary>
+
+If you're an LLM agent helping set up opencode-mobile-use, follow these steps:
+
+#### Step 1: Register the plugin in the configs
+
+The plugin has two parts: the **server plugin** (tools + skills) and the **TUI plugin** (live sidebar). Add both entries — create the files if they don't exist, and preserve any existing `plugins`/other keys:
+
+`~/.config/opencode/opencode.jsonc`:
+
+```jsonc
+{
+  "plugins": ["opencode-mobile-use"]
+}
+```
+
+`~/.config/opencode/cli.json`:
+
+```json
+{
+  "plugins": ["opencode-mobile-use/tui"]
+}
+```
+
+#### Step 2: Verify the config
+
+```bash
+cat ~/.config/opencode/opencode.jsonc
+```
+
+Should contain `"opencode-mobile-use"` in the `plugins` array. If not, add it manually. (Some setups use `opencode.json` — check both.)
+
+#### Step 3: Restart and confirm the plugin loaded
+
+```bash
+opencode2 service restart
+opencode2 api get /api/plugin
+```
+
+The response must include `"id": "mobile.use"`.
+
+#### Step 4: Connect the phone
+
+Check for a device:
+
+```bash
+adb devices
+```
+
+If nothing is online, the phone needs **USB debugging** enabled (Settings → Developer options). Then either:
+
+- plug in via USB and tap **Allow**, or
+- run `/phone-connect` in the TUI for guided wireless pairing, or
+- run `/phone-connect-remote` for Tailscale (works from anywhere)
+
+#### Step 5: Verify end to end
+
+Run the `phone_devices` tool — it should list the phone with state `device`. Then confirm with a real task, e.g. "take a selfie and open it on my laptop" or "what's on my home screen?".
+
+If the plugin didn't load:
+
+1. Is `opencode-mobile-use` in `opencode.jsonc` **and** `opencode-mobile-use/tui` in `cli.json`?
+2. Did you restart OpenCode after editing the configs?
+3. Check the logs: `tail ~/.local/share/opencode/log/opencode.log` and grep for `mobile.use`.
+
+</details>
 
 ## Prerequisites
 
