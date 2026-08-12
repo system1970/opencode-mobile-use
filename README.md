@@ -1,0 +1,78 @@
+# opencode-mobile-use
+
+Control an Android phone from OpenCode — with a **live phone screen in the TUI sidebar**, full agent tooling, and a built-in phone-vision subagent.
+
+## What it does
+
+- **Live sidebar screen** — the phone's display renders in the TUI sidebar (~36×30 cells via the terminal image protocol) and updates when the screen changes. Click it to open an enlarged full-resolution view.
+- **12 agent tools** — `phone_devices`, `phone_screenshot` (with SoM annotation + downscale), `phone_dump_ui` (stale-proof: stdout dump + focused-window cross-check + freshness cache), `phone_tap`, `phone_swipe`, `phone_type` (full Unicode via ADBKeyboard, with IME restore), `phone_key`, `phone_open`, `phone_install`, `phone_logcat`, `phone_shell`, `phone_adb`.
+- **App skills** — in-plugin skills encode hard-won failure modes for WhatsApp, X (Twitter), and the general mobile loop (look → act → verify).
+- **`phone-vision` subagent** — a bundled vision agent (MiMo V2.5 Free) that describes phone screenshots when the active model can't see images.
+- **Remote access** — pair once over Tailscale (`/phone-connect-remote`) and the phone works from anywhere; auto-reconnects.
+- **`/phone-connect`** — guided wireless pairing in the TUI; **`/phone-disconnect`** turns off wireless debugging on the device so the disconnect actually sticks.
+
+## Install
+
+The plugin has two parts: the **server plugin** (tools/skills) and the **TUI plugin** (sidebar widget). Add it to both configs:
+
+**`~/.config/opencode/opencode.json(c)`** (or project config):
+
+```jsonc
+{
+  "plugins": ["opencode-mobile-use"]
+}
+```
+
+**`~/.config/opencode/cli.json`**:
+
+```json
+{
+  "plugins": ["opencode-mobile-use/tui"]
+}
+```
+
+Restart opencode2. The sidebar shows the phone status; the agent gets the `phone_*` tools.
+
+### Prerequisites
+
+- Android phone with **USB debugging** enabled (Developer options)
+- `adb` on PATH, or set `MOBILE_ADB_PATH` / `ADB_PATH`
+- `ffmpeg` (optional — used by the screenshot pipeline on some setups)
+
+## Connect
+
+| Method | How |
+|---|---|
+| **USB** | Plug in, tap *Allow* on the phone |
+| **Wireless** | `/phone-connect` in the TUI (guided pairing) |
+| **Remote** | `/phone-connect-remote` — pairs over Tailscale (phone + PC on the same account) |
+
+## Known issues
+
+- **CodeMode tool dispatch** — plugin tools currently ship with `codemode: false` (they work via the standard tool-call path) because of [opencode issue #41949](https://github.com/anomalyco/opencode/issues/41949) (plugin tools in CodeMode execute but don't relay results). Flip `options: { codemode: false }` → `true` in `index.ts` once the upstream fix ([PR #41954](https://github.com/anomalyco/opencode/pull/41954)) lands.
+- **Missing tool descriptions crash all sessions** — tracked in [opencode issue #42026](https://github.com/anomalyco/opencode/issues/42026). Every tool in this plugin has a description; the bug is upstream.
+
+## Development
+
+```bash
+git clone https://github.com/<you>/opencode-mobile-use.git
+cd opencode-mobile-use
+bun install
+bunx tsc --noEmit -p tsconfig.json   # typecheck
+```
+
+Point your configs at the local copy:
+
+```jsonc
+// opencode.json
+{ "plugins": ["./plugins/opencode-mobile-use"] }
+```
+
+```json
+// cli.json
+{ "plugins": ["./plugins/opencode-mobile-use/tui.tsx"] }
+```
+
+## License
+
+MIT

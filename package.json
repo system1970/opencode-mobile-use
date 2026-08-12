@@ -1,0 +1,36 @@
+{
+  "name": "opencode-mobile-use",
+  "version": "0.2.0",
+  "description": "Control an Android phone from OpenCode: live phone screen in the TUI sidebar, agent tools for taps/typing/swipes/UI dumps, app-specific skills, and a built-in phone-vision subagent. Works over USB, wireless, or Tailscale.",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./tui": "./tui.tsx"
+  },
+  "files": [
+    "*.ts",
+    "*.tsx"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "android",
+    "adb",
+    "mobile",
+    "computer-use",
+    "tui"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@opencode-ai/plugin": "0.0.0-next-17292",
+    "@opentui/core": "0.0.0-20260808-9ecf7c0a",
+    "@opentui/keymap": "0.0.0-20260808-9ecf7c0a",
+    "@opentui/solid": "0.0.0-20260808-9ecf7c0a",
+    "effect": "^4.0.0-beta.101",
+    "solid-js": "1.9.12"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "5.9.3"
+  }
+}
