@@ -44,6 +44,28 @@ Run \`phone_devices\`. Nothing online? Guide the user: \`/phone-connect\`
 USB and tap Allow. Don't retry tools until a device is online. With multiple
 devices, pass the serial to every tool.
 
+## Deep links first — navigate with intents, not taps
+
+Prefer deep links / explicit intents over walking the UI. They are faster,
+dodge flaky typing, and skip fragile tap sequences:
+
+- **Launch straight to a destination**: \`phone_shell\` →
+  \`am start -a android.intent.action.VIEW -d "<uri>" <package>\` — e.g.
+  \`spotify:track:<id>\`, \`spotify:search:<query>\` (spaces as %20),
+  \`whatsapp://chat\`.
+- **Resolve IDs on the web first**: \`websearch\` for
+  \`<thing> open.spotify.com/track\` (or /album, /playlist, /artist) and read
+  the ID from the result URL — prefer the canonical entry (highest play
+  count) over remixes/compilations.
+- **Deep links beat typing**: search-typing silently fails with some IMEs;
+  \`spotify:search:<query>\` pre-fills the field AND runs the search with
+  zero keystrokes.
+- **Caveats**: deep links usually navigate WITHOUT auto-playing and may pause
+  current playback — tap the row or the Play button (\`desc="Play"\`)
+  afterwards, then verify.
+- **UI walking (dump → tap) is the FALLBACK** when no deep link exists or a
+  link fails — never tap through the UI first when a link can take you there.
+
 ## The loop — look, act, verify
 
 1. \`phone_dump_ui\` or \`phone_screenshot\` to see where things are.
@@ -64,9 +86,9 @@ devices, pass the serial to every tool.
   (2) only if it can't: the user's \`vision\` subagent, if they have one set
   up; (3) only if neither exists: \`phone-vision\` (MiMo) as the final
   fallback. Pass the screenshot file path. Never jump straight to tier 3.
-- **Non-dumpable apps** (Flutter/canvas — e.g. Truecaller): \`phone_dump_ui\`
-  fails. Skip straight to \`phone_screenshot\` + the vision tiers — don't
-  waste dump retries.
+- **Non-dumpable apps** (Flutter/canvas — e.g. video or banking apps):
+  \`phone_dump_ui\` fails. Skip straight to \`phone_screenshot\` + the vision
+  tiers — don't waste dump retries.
 - **Clearing a text field**: taps on an in-app clear (X) button are unreliable
   in Flutter/WebView fields — instead send \`am broadcast -a ADB_CLEAR_TEXT\`
   via \`phone_shell\` (ADBKeyboard), then verify the field is empty before
@@ -195,9 +217,9 @@ user to \`/phone-connect\` in the TUI or plug in via USB.
 ## Launch — package, not launcher icons
 
 1. Find the package: \`phone_shell\` → \`pm list packages | grep -i camera\`
-   (Samsung: \`com.sec.android.app.camera\`).
+   (Samsung example: \`com.sec.android.app.camera\`).
 2. \`phone_open\` with that package. Launcher-icon taps drift between screens
-   (the dock moved between dumps today); package launch is exact.
+   (launcher layouts shift between dumps); package launch is exact.
 3. Confirm launch: \`phone_shell\` → \`dumpsys window | grep mCurrentFocus\`
    should show \`...Camera\`.
 
@@ -211,9 +233,9 @@ user to \`/phone-connect\` in the TUI or plug in via USB.
 
 ## Front vs rear — the dump is the truth
 
-- NEVER judge camera direction from the viewfinder scene. Today the front
-  camera was pointed at the ceiling (phone face-up) and looked identical to a
-  rear shot; vision models misjudged it twice.
+- NEVER judge camera direction from the viewfinder scene. A front camera
+  pointed at a ceiling (phone face-up) looks identical to a rear shot, and
+  vision models misjudge it — trust the dump.
 - The flip button's content-desc states what the button DOES:
   - \`desc="Switch to rear camera"\` → front camera ACTIVE
   - \`desc="Switch to front camera"\` → rear camera ACTIVE
@@ -244,6 +266,147 @@ user to \`/phone-connect\` in the TUI or plug in via USB.
 - **Permission dialog on first launch**: tap Allow.
 - **Low battery / screen off**: \`phone_key power\`, swipe up twice; warn on
   critically low battery.
+- **No change after an action**: do NOT repeat it — re-dump, check
+  \`phone_logcat\`, reconsider.`,
+  }),
+  makeSkill({
+    id: "spotify",
+    name: "spotify",
+    description:
+      "Automate Spotify on the user's Android phone via the mobile-use tools — open the app, search for songs or albums, play tracks, and verify what's actually playing. Use whenever the user asks to play a song, artist, album, or playlist on Spotify.",
+    content: `# Spotify Automation (via mobile-use)
+
+The phone must be connected: check \`phone_devices\` first; if none, guide the
+user to \`/phone-connect\` in the TUI or plug in via USB.
+
+## Launch
+
+1. \`phone_open\` with package \`com.spotify.music\`.
+2. Confirm launch: \`phone_shell\` → \`dumpsys window | grep mCurrentFocus\`
+   should show \`com.spotify.music.MainActivity\`.
+3. Landing: Home with \`All / Music / Podcasts\` filters, quick-pick cards, and
+   a 4-tab bottom bar (Home / Search / Your Library / Create).
+
+## Fast path — deep links (default)
+
+Deep links are the PRIMARY way to task Spotify — they bypass the flaky
+search-typing path entirely (verified working):
+
+1. **Resolve the URI with a web search**: \`websearch\` for
+   \`<song> <artist> open.spotify.com/track\` — or \`/album\`, \`/playlist\`,
+   \`/artist\` for those — the canonical result URL carries the ID
+   (e.g. greedy = \`open.spotify.com/track/6wCv0m87EJ6kYGUi5c0kbG\`). Pick
+   the entry with the most plays, not a remix/compilation.
+2. **Open the track**: \`phone_adb\` →
+   \`am start -a android.intent.action.VIEW -d "spotify:track:<ID>" com.spotify.music\`.
+   The app navigates to the track's album context.
+3. **Or search directly**: \`spotify:search:<query>\` (URL-encode spaces as
+   %20) — opens Search with the query pre-filled AND results already
+   executed. No typing needed.
+4. **Deep links do NOT auto-play** — they pause current playback and land on
+   a page. \`phone_dump_ui\`, tap the track row or the Play button
+   (\`desc="Play"\`), then verify.
+
+## Manual fallback — search by typing
+
+1. Tap **Search** (\`desc="Search, Tab 2 of 4"\`, bottom bar).
+2. Tap the search field, then \`phone_type\` (ASCII; transliterate non-English
+   titles). Typing may silently fail with the stock IME — if the field shows
+   no text, switch IME (\`ime set com.android.adbkeyboard/.AdbIME\`), tap the
+   field again, and send \`am broadcast -a ADB_INPUT_TEXT --es msg <query>\`;
+   restore the old IME afterwards.
+3. Tap the matching top result (song or album card).
+4. In an album: the FIRST track is NOT necessarily the target — the title
+   track often sits first while the requested song is later in the list.
+   Scroll (\`phone_swipe\` up) until the right title appears, then tap its
+   row.
+
+## Verify playback — never assume
+
+- \`phone_dump_ui\` now survives Spotify's animating screens (the dump pauses
+  media briefly and resumes it; the header notes it when it happens). Still,
+  if the dump fails, don't retry — screenshot + vision.
+- Confirmation of playback: the playing row is highlighted (green), a pause
+  icon is visible, and the mini player shows the title + connected output
+  device (e.g. a Bluetooth speaker). Report the ACTUAL title playing, not the
+  one you intended — tapping the wrong row happens (title track ≠ target
+  track).
+- \`phone_shell\` → \`dumpsys media_session | grep state=PlaybackState\`
+  reports PLAYING/PAUSED definitively.
+
+## When it misbehaves
+
+- **Dump fails**: don't retry it — screenshot + vision from the start.
+- **Deep link lands on the album, not the track**: normal — tap the track
+  row or Play.
+- **Deep link leaves music paused**: also normal — resume by tapping Play or
+  the row.
+- **Wrong track playing**: tap the correct row; re-verify via screenshot.
+- **No result found**: broaden the query (artist + song name), try the
+  album card, or the artist page (\`desc="Navigates to more content from this
+  artist"\`).
+- **Not signed in / ad break**: a premium wall may block playback — tell the
+  user rather than retrying blindly.
+- **Vision misreads titles**: cross-check artist names from the dump (they
+  usually survive) against the known tracklist.
+- **No change after an action**: do NOT repeat it — screenshot, check
+  \`phone_logcat\`, reconsider.`,
+  }),
+  makeSkill({
+    id: "phone-call",
+    name: "phone-call",
+    description:
+      "Make phone calls from the user's Android phone via the mobile-use tools — find contacts by name, confirm the right number, dial, verify the call connects, and hang up. Use whenever the user asks to call someone, dial a number, or end a call.",
+    content: `# Phone Call Automation (via mobile-use)
+
+The phone must be connected: check \`phone_devices\` first; if none, guide the
+user to \`/phone-connect\` in the TUI or plug in via USB.
+
+## Find the contact — query the database, don't browse the UI
+
+1. List contacts: \`phone_shell\` →
+   \`content query --uri content://com.android.contacts/contacts --projection _id:display_name\`.
+   Filter for the name (\`| grep -i <name>\`).
+2. Get numbers: \`phone_shell\` →
+   \`content query --uri content://com.android.contacts/data/phones --projection display_name:data1:data2\`
+   — \`data1\` is the number (E.164, e.g. +14155550123), \`data2=2\` is
+   mobile. Match by display_name.
+3. **Duplicate names are common** — "John Smith" can exist twice with
+   different numbers. If more than one match, ASK THE USER which number to
+   call before dialing. Never guess.
+
+## Dial
+
+1. Place the call: \`phone_adb\` →
+   \`am start -a android.intent.action.CALL -d tel:<number>\`. This dials
+   immediately (ACTION_DIAL only pre-fills — use CALL).
+2. Verify: \`phone_dump_ui\` — focus should be
+   \`com.samsung.android.incallui/...InCallActivity\` (Samsung) showing
+   \`Calling…\` + contact name + number. Report the name and number you
+   dialed.
+
+## End the call
+
+1. \`phone_key endcall\` (KEYCODE_ENDCALL).
+2. Verify: \`phone_shell\` →
+   \`dumpsys telecom | grep ConnectionState=\` shows a trailing
+   \`STATE_DISCONNECTED\` entry.
+
+## When it misbehaves
+
+- **Balance/end-call dialog** (\`com.android.phone\` with an OK button — some
+  carriers show a post-call balance notice, e.g. "Your last call cost…"): tap
+  OK to dismiss; it's the previous call's notification, not an active call.
+- **Call state ambiguity**: \`dumpsys window | grep mCurrentFocus\` —
+  InCallActivity = active call; \`com.android.phone\` = dialog; the home
+  screen = no call. Check before acting.
+- **Call didn't connect / got cut**: re-dial the same number once; tell the
+  user if it fails again (their network/caller is the issue, not the phone).
+- **Call screening apps** (e.g. Truecaller): calls pass through a screener —
+  it doesn't block dialing, just delays connect; wait a few seconds before
+  reporting "not connected".
+- **Wrong contact tapped**: you were supposed to confirm first — back out,
+  re-query, and ask.
 - **No change after an action**: do NOT repeat it — re-dump, check
   \`phone_logcat\`, reconsider.`,
   }),

@@ -147,7 +147,11 @@ export async function runAdb(
     return { stdout, stderr: toStr(stderr), code: 0 }
   } catch (err: any) {
     const code = typeof err.code === "number" ? err.code : 1
-    return { stdout: err.stdout ?? Buffer.alloc(0), stderr: err.stderr ?? String(err.message ?? err), code }
+    return {
+      stdout: err.stdout ?? Buffer.alloc(0),
+      stderr: toStr(err.stderr ?? String(err.message ?? err)),
+      code,
+    }
   }
 }
 

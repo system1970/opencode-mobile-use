@@ -30,6 +30,66 @@ function markAction(): void {
   lastActionAt = Date.now()
 }
 
+// ── UI dump resilience ─────────────────────────────────────────────────────
+// `uiautomator dump` fails on three fronts: continuously-animating screens
+// (it waits for the UI to reach "idle" and can hang forever), stale
+// uiautomator processes that poison later attempts, and huge Compose/WebView
+// trees that outlive fixed timeouts. These helpers address all three.
+
+const ANIMATION_SETTINGS = [
+  "window_animation_scale",
+  "transition_animation_scale",
+  "animator_duration_scale",
+]
+
+async function getAnimationScales(
+  serial: string,
+  adbPath: string | undefined,
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {}
+  await Promise.all(
+    ANIMATION_SETTINGS.map(async (k) => {
+      const r = await runAdb(["shell", "settings", "get", "global", k], {
+        serial,
+        adbPath,
+        timeoutMs: 8_000,
+      }).catch(() => null)
+      out[k] = (r?.stdout.toString("utf8") ?? "").trim()
+    }),
+  )
+  return out
+}
+
+async function setAnimationScales(
+  serial: string,
+  adbPath: string | undefined,
+  scales: Record<string, string>,
+): Promise<void> {
+  await Promise.all(
+    ANIMATION_SETTINGS.map((k) =>
+      runAdb(["shell", "settings", "put", "global", k, scales[k] || "0"], {
+        serial,
+        adbPath,
+        timeoutMs: 8_000,
+      }).catch(() => null),
+    ),
+  )
+}
+
+async function killStaleUiAutomator(
+  serial: string,
+  adbPath: string | undefined,
+): Promise<void> {
+  // `[u]iautomator` bracket trick so pkill doesn't match our own shell's
+  // command line and kill the session it is running in.
+  await runAdb(["shell", "pkill -f '[u]iautomator'; killall uiautomator 2>/dev/null; true"], {
+    serial,
+    adbPath,
+    timeoutMs: 10_000,
+  }).catch(() => {})
+}
+
+
 function renderDump(
   chosen: string,
   focusLine: string,
@@ -110,7 +170,7 @@ async function runOrThrow(
 ): Promise<RunResult> {
   const result = await runAdb(args, opts)
   if (result.code !== 0) {
-    throw new Error(`${label} failed (exit ${result.code}): ${result.stderr.trim() || "no error output"}`)
+    throw new Error(`${label} failed (exit ${result.code}): ${String(result.stderr ?? "").trim() || "no error output"}`)
   }
   return result
 }
@@ -353,57 +413,116 @@ export default Plugin.define({
           // one shell call (over the adb-server socket) to save round-trips.
           const HIERARCHY = /<hierarchy[\s\S]*<\/hierarchy>/
           const extract = (out: string): string => HIERARCHY.exec(out)?.[0] ?? ""
-          const combined = `dumpsys window | grep mCurrentFocus; uiautomator dump /dev/tty`
-          let out = ""
-          try {
-            out = await socketShell(chosen, combined)
-          } catch {
-            // socket unavailable (adb server not running, etc.) — spawn fallback
-            const r = await runAdb(["shell", combined], { serial: chosen, adbPath, timeoutMs: 30_000 }).catch(() => null)
-            out = r?.stdout.toString("utf8") ?? ""
-          }
-          let focusLine = out.split("\n").find((l) => l.includes("mCurrentFocus"))?.trim() ?? "unknown"
-          let xml = extract(out)
-          // uiautomator retries: the screen may have been animating
+          let focusLine = "unknown"
+          let xml = ""
+
+          // Round 1 — fast path: focus + dump to /dev/tty, hard-bounded by
+          // `timeout` so a non-idling screen can't hang the socket read past
+          // its deadline. Kill a stuck uiautomator between attempts — some
+          // builds hang forever and poison every later dump.
+          const ttyCommand = `dumpsys window | grep mCurrentFocus; timeout 12 uiautomator dump /dev/tty`
           for (let attempt = 0; attempt < 2 && !xml; attempt++) {
-            await new Promise((resolve) => setTimeout(resolve, 800))
+            let out = ""
             try {
-              out = await socketShell(chosen, combined)
+              out = await socketShell(chosen, ttyCommand)
             } catch {
-              const r = await runAdb(["shell", combined], { serial: chosen, adbPath, timeoutMs: 30_000 }).catch(() => null)
+              const r = await runAdb(["shell", ttyCommand], { serial: chosen, adbPath, timeoutMs: 25_000 }).catch(() => null)
               out = r?.stdout.toString("utf8") ?? ""
             }
             focusLine = out.split("\n").find((l) => l.includes("mCurrentFocus"))?.trim() ?? focusLine
             xml = extract(out)
+            if (!xml) {
+              await killStaleUiAutomator(chosen, adbPath)
+              await new Promise((resolve) => setTimeout(resolve, 500))
+            }
           }
+
+          // Round 2 — heavy path: switch animations off so the UI can reach
+          // the idle state uiautomator requires (a running progress bar or
+          // video preview never idles), kill stale processes, then dump to a
+          // file — faster than /dev/tty, and huge Compose/WebView trees get a
+          // generous deadline instead of being cut off mid-write.
           if (!xml) {
-            // Fallback: unique temp file (some builds reject /dev/tty)
-            for (let attempt = 0; attempt < 2 && !xml; attempt++) {
-              const path = `/sdcard/window_dump_${Date.now()}_${attempt}.xml`
-              const r = await runAdb(["shell", "uiautomator", "dump", path], {
+            const prev = await getAnimationScales(chosen, adbPath)
+            try {
+              await setAnimationScales(chosen, adbPath, {})
+              await killStaleUiAutomator(chosen, adbPath)
+              for (let attempt = 0; attempt < 2 && !xml; attempt++) {
+                const path = `/sdcard/window_dump_${Date.now()}_${attempt}.xml`
+                const r = await runAdb(
+                  ["shell", `timeout 45 uiautomator dump ${path}`],
+                  { serial: chosen, adbPath, timeoutMs: 60_000 },
+                )
+                if (r.code === 0) {
+                  const cat = await runAdb(["shell", "cat", path], {
+                    serial: chosen,
+                    adbPath,
+                    timeoutMs: 20_000,
+                  }).catch(() => null)
+                  xml = extract(cat?.stdout.toString("utf8") ?? "")
+                }
+                await runAdb(["shell", "rm", "-f", path], {
+                  serial: chosen,
+                  adbPath,
+                  timeoutMs: 10_000,
+                }).catch(() => {})
+                if (!xml) {
+                  await killStaleUiAutomator(chosen, adbPath)
+                  await new Promise((resolve) => setTimeout(resolve, 600))
+                }
+              }
+            } finally {
+              await setAnimationScales(chosen, adbPath, prev)
+            }
+          }
+
+          // Round 3 — last resort: while media is playing, the mini-player's
+          // progress bar keeps the UI from ever reaching the idle state
+          // uiautomator requires ("could not get idle state"). Pause playback,
+          // dump, then always resume.
+          if (!xml) {
+            await runAdb(["shell", "cmd media_session dispatch pause"], {
+              serial: chosen,
+              adbPath,
+              timeoutMs: 10_000,
+            }).catch(() => null)
+            await new Promise((resolve) => setTimeout(resolve, 800))
+            try {
+              const path = `/sdcard/window_dump_${Date.now()}_media.xml`
+              const r = await runAdb(["shell", `timeout 20 uiautomator dump ${path}`], {
                 serial: chosen,
                 adbPath,
-                timeoutMs: 20_000,
+                timeoutMs: 30_000,
               })
               if (r.code === 0) {
                 const cat = await runAdb(["shell", "cat", path], {
                   serial: chosen,
                   adbPath,
-                  timeoutMs: 15_000,
-                })
-                xml = extract(cat.stdout.toString("utf8"))
+                  timeoutMs: 20_000,
+                }).catch(() => null)
+                xml = extract(cat?.stdout.toString("utf8") ?? "")
               }
               await runAdb(["shell", "rm", "-f", path], {
                 serial: chosen,
                 adbPath,
                 timeoutMs: 10_000,
               }).catch(() => {})
-              if (!xml) await new Promise((resolve) => setTimeout(resolve, 800))
+            } finally {
+              await runAdb(["shell", "cmd media_session dispatch play"], {
+                serial: chosen,
+                adbPath,
+                timeoutMs: 10_000,
+              }).catch(() => null)
             }
+            if (xml) focusLine = `${focusLine} (media was paused briefly for the dump)`
           }
+
           if (!xml) {
-            throw new Error(
-              "uiautomator dump failed after retries — the screen may be animating, locked, or the app uses a non-dumpable surface (WebView/Flutter/canvas). Take a screenshot instead.",
+            // Graceful degradation: don't blind-throw — report the focused
+            // window so the agent at least knows the app, and point at the
+            // screenshot fallback.
+            return textResult(
+              `Focused window: ${focusLine}\nUI dump failed after all fallbacks — the screen is likely animating continuously or uses a non-dumpable surface (WebView/Flutter/canvas). Take a screenshot instead.`,
             )
           }
           dumpCache = { serial: chosen, at: Date.now(), focus: focusLine, xml }
@@ -667,7 +786,7 @@ export default Plugin.define({
           await listDevices(adbPath)
           const result = await runAdb(args, { adbPath, timeoutMs: 20_000 })
           const out = result.stdout.toString("utf8").trimEnd()
-          const err = result.stderr.trimEnd()
+          const err = String(result.stderr ?? "").trimEnd()
           if (result.code !== 0) {
             return textResult(`adb ${args.join(" ")} failed (exit ${result.code}): ${err || out || "no output"}`)
           }
