@@ -32,10 +32,15 @@ export const SKILLS: Skill.Info[] = [
       "Drive an Android phone connected to this machine over adb: see the screen, tap, type, swipe, launch apps, dump the UI tree, read logs. Use whenever the user wants anything done on, or with, their phone or an app on it.",
     content: `# Mobile Use
 
+> When starting ANY mobile task, load this skill explicitly via the \`skill\`
+> tool first — don't rely on autoinvoke (it may not re-inject after a service
+> restart). Then act from its rules, not from tool-description habits.
+
 Control an Android phone connected to this machine via the \`phone_*\` tools
 (\`phone_devices\`, \`phone_dump_ui\`, \`phone_screenshot\`, \`phone_tap\`,
-\`phone_swipe\`, \`phone_type\`, \`phone_key\`, \`phone_open\`, \`phone_install\`,
-\`phone_logcat\`, \`phone_shell\`, \`phone_adb\`).
+\`phone_swipe\`, \`phone_type\`, \`phone_clear\`, \`phone_key\`,
+\`phone_media\`, \`phone_open\`, \`phone_install\`, \`phone_logcat\`,
+\`phone_shell\`, \`phone_adb\`).
 
 ## Connect first
 
@@ -86,17 +91,62 @@ dodge flaky typing, and skip fragile tap sequences:
   (2) only if it can't: the user's \`vision\` subagent, if they have one set
   up; (3) only if neither exists: \`phone-vision\` (MiMo) as the final
   fallback. Pass the screenshot file path. Never jump straight to tier 3.
-- **Non-dumpable apps** (Flutter/canvas — e.g. video or banking apps):
-  \`phone_dump_ui\` fails. Skip straight to \`phone_screenshot\` + the vision
-  tiers — don't waste dump retries.
+- **dump vs vision by screen type**: list screens (playlists, search
+  results, settings, chats) expose text in the accessibility tree — use
+  \`phone_dump_ui\` there first. Canvas-rendered screens (Spotify/Instagram/X
+  home, Flutter apps, video) are sparse — go straight to
+  \`phone_screenshot\` + the vision tiers, don't waste dump retries. A dump
+  that RETURNS with content is not a failure — only erroring dumps mean
+  switch to vision. When a vision reading looks off, cross-check it against
+  the dump (text nodes usually survive even on canvas screens).
+- **Tiny icon-state checks need FULL-RES screenshots**: badges, toggles and
+  mode indicators (e.g. Spotify's repeat "1", shuffle state) are illegible
+  on downscaled captures — vision will hallucinate them. Use
+  \`phone_screenshot\` WITHOUT \`small\`/\`scale\` and tell vision to zoom
+  into the exact icon bounds. When the state matters (repeat-one, loop,
+  toggle), prefer behavioral verification: sample the state twice over time
+  (e.g. track position resetting = repeat-one) instead of trusting one
+  icon read.
 - **Clearing a text field**: taps on an in-app clear (X) button are unreliable
   in Flutter/WebView fields — instead send \`am broadcast -a ADB_CLEAR_TEXT\`
   via \`phone_shell\` (ADBKeyboard), then verify the field is empty before
   typing.
-- **Type**: tap the field first. \`phone_type\` PREFERS ADBKeyboard (full
-  Unicode, IME restored after) and only falls back to \`input text\` (ASCII)
-  when ADBKeyboard is unavailable — keep that preference; never bypass
-  ADBKeyboard by sending raw \`input text\` yourself.
+- **Type**: tap the field first. \`phone_type\`: clean ASCII (no '%') →
+  \`input text\` (fast, no IME switching); anything else (Unicode, emojis,
+  '%') → clipboard+paste keyevents first, then ADBKeyboard IME broadcast as
+  the fallback — the switch/restore is done with NO taps (switching IME
+  MOVES the focused field; a tap at old coordinates hits whatever is there
+  now). If the text didn't land, re-tap the field from a FRESH dump and
+  retry — never from memory. \`phone_clear\` clears the focused field
+  (Ctrl+A + Del). Never bypass \`phone_type\` with a raw \`input text\`
+  yourself.
+- **Media control**: use \`phone_media\` (cmd media_session dispatch —
+  reaches the active session regardless of focus) instead of media
+  keyevents. Repeat/shuffle state has NO shell API — read/set it in the
+  app UI only. \`dumpsys media_session --active\` (via \`phone_shell\`)
+  confirms PLAYING/PAUSED + the actual track.
+- **Wake/unlock**: screen off → \`input keyevent 224\` (WAKEUP) then
+  \`input keyevent 82\` (MENU) — the 224+82 pair is required on Samsung
+  (WAKEUP alone can blank right back). \`wm dismiss-keyguard\` only works
+  for non-secure locks; PIN needs \`input text <pin>\` + ENTER on the
+  bouncer (type fast — ~7s budget).
+- **Keep the link alive**: Samsung kills wireless adb when the screen
+  locks / display sleeps (link dies mid-command — that's why long
+  commands fail with no output). For long operations:
+  \`svc power stayon true\`, \`dumpsys deviceidle disable\`,
+  \`settings put system screen_off_timeout 2147483647\`; do long waits
+  host-side, never \`sleep\` >10s on-device. If the link dies, reconnect
+  (\`adb connect\` / \`/phone-connect\`) and re-wake (224, 82).
+- **Animations**: \`settings put global window_animation_scale 0.5\`
+  (+ transition_animation_scale, animator_duration_scale) — 0.5 not 0.0
+  on OneUI 6.1+ (0.0 causes layout/a11y glitches). Speeds everything up
+  and reduces uiautomator idle failures. OneUI's a11y "Remove animations"
+  toggle resets these keys — if they keep reverting, that's the culprit.
+- **Deep links**: verify the URI resolves to the target app BEFORE
+  launching: \`cmd package resolve-activity --brief -a
+  android.intent.action.VIEW -d "<uri>"\` — expect <pkg>/<activity>, not
+  ResolverActivity or "No activity found". Add \`-p <pkg>\` to force the
+  app for https App Links (unverified links go to the browser on 12+).
 - **Screen off/locked**: \`phone_key power\`, swipe up twice.
 - **Scroll**: vertical swipes; \`durationMs\` 100 = fling. Scroll until the target
   appears, then dump.
@@ -309,6 +359,12 @@ search-typing path entirely (verified working):
 
 ## Manual fallback — search by typing
 
+> **STOP**: if you are about to type into Spotify's search field, don't —
+> use a deep link instead (\`spotify:search:<query>\` or a resolved track
+> URI above). Typing is the flaky path. Only type when deep links failed
+> (e.g. websearch found nothing) or a URI genuinely can't express the
+> destination.
+
 1. Tap **Search** (\`desc="Search, Tab 2 of 4"\`, bottom bar).
 2. Tap the search field, then \`phone_type\` (ASCII; transliterate non-English
    titles). Typing may silently fail with the stock IME — if the field shows
@@ -333,6 +389,11 @@ search-typing path entirely (verified working):
   track).
 - \`phone_shell\` → \`dumpsys media_session | grep state=PlaybackState\`
   reports PLAYING/PAUSED definitively.
+- Play/pause/next control: \`phone_media\` (cmd media_session dispatch) —
+  reaches the session even when another app has focus.
+- Repeat mode (loop) has NO shell API — it's app-private. Set it in the
+  now-playing UI and verify by watching the track position reset (or the
+  repeat icon at full-res) rather than trusting a single icon read.
 
 ## When it misbehaves
 
@@ -378,9 +439,13 @@ user to \`/phone-connect\` in the TUI or plug in via USB.
 ## Dial
 
 1. Place the call: \`phone_adb\` →
-   \`am start -a android.intent.action.CALL -d tel:<number>\`. This dials
-   immediately (ACTION_DIAL only pre-fills — use CALL).
-2. Verify: \`phone_dump_ui\` — focus should be
+   \`am start -a android.intent.action.CALL -d tel:<number>\`.
+2. **CALL can fail from the shell** (SecurityException — uid 2000 lacks
+   CALL_PHONE). If the output mentions SecurityException, fall back to
+   \`am start -a android.intent.action.DIAL -d tel:<number>\` (pre-fills the
+   dialer), then \`phone_tap\` the call button — and tell the user the call
+   needed a manual confirm.
+3. Verify: \`phone_dump_ui\` — focus should be
    \`com.samsung.android.incallui/...InCallActivity\` (Samsung) showing
    \`Calling…\` + contact name + number. Report the name and number you
    dialed.

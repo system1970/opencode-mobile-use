@@ -230,6 +230,27 @@ export function escapeInputText(text: string): string {
     .replace(/ /g, "%s")
 }
 
+/**
+ * Set the device clipboard via `cmd clipboard set-primary-clip` (Android 13+;
+ * Samsung ships it). The text travels base64 and is decoded ON-DEVICE so
+ * Windows codepage mangling of non-ASCII argv can't corrupt it. Returns true
+ * on success.
+ */
+export async function clipboardSet(
+  serial: string,
+  text: string,
+  adbPath: string | undefined,
+): Promise<boolean> {
+  const b64 = Buffer.from(text, "utf8").toString("base64")
+  const r = await runAdb(
+    ["shell", "cmd", "clipboard", "set-primary-clip", "--text", `"$(printf %s ${b64} | base64 -d)"`],
+    { serial, adbPath, timeoutMs: 10_000 },
+  ).catch(() => null)
+  if (!r) return false
+  const out = `${r.stdout.toString("utf8")} ${r.stderr}`.toLowerCase()
+  return r.code === 0 && !out.includes("no shell command") && !out.includes("error:")
+}
+
 export const KEYCODES: Record<string, number> = {
   home: 3,
   back: 4,
@@ -254,6 +275,7 @@ export const KEYCODES: Record<string, number> = {
   volume_down: 25,
   power: 26,
   camera: 27,
+  clear: 28,
   menu: 82,
   search: 84,
   enter: 66,
@@ -264,6 +286,19 @@ export const KEYCODES: Record<string, number> = {
   escape: 111,
   app_switch: 187,
   recents: 187,
+  wakeup: 224,
+  paste: 279,
+  media_play: 126,
+  media_pause: 127,
+  media_play_pause: 85,
+  media_stop: 86,
+  media_next: 87,
+  media_previous: 88,
+  headsethook: 79,
+  ctrl_left: 113,
+  shift_left: 59,
+  alt_left: 57,
+  meta_left: 117,
   "=": 70,
   ",": 55,
   ".": 56,

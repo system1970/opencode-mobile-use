@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import {
+  clipboardSet,
   escapeInputText,
   keycodeFor,
   parseUiDump,
@@ -200,6 +201,36 @@ async function typeWithAdbKeyboard(
     const set = await runAdb(["shell", "ime", "set", ADB_IME], { serial, adbPath, timeoutMs: 10_000 }).catch(() => null)
     if (!set || set.code !== 0) return false
   }
+  // Wait for the framework to bind the new IME AND serve an input connection
+  // to the focused view (mServedView non-null). NEVER tap: switching the IME
+  // changes the keyboard height, which MOVES the focused field — a tap at
+  // pre-switch coordinates hits whatever is there now (e.g. a sticker).
+  // Note: Samsung's dumpsys input_method has NO mCurMethodId line (session
+  // hash instead) — poll `default_input_method` (what `ime set` writes) plus
+  // mServedView.
+  let ready = false
+  for (let i = 0; i < 7; i++) {
+    const [m, s] = await Promise.all([
+      runAdb(["shell", "settings", "get", "secure", "default_input_method"], {
+        serial,
+        adbPath,
+        timeoutMs: 10_000,
+      }).catch(() => null),
+      runAdb(["shell", "dumpsys", "input_method", "|", "grep", "mServedView"], {
+        serial,
+        adbPath,
+        timeoutMs: 10_000,
+      }).catch(() => null),
+    ])
+    const bound = m?.stdout.toString("utf8").trim() === ADB_IME
+    const served = /mServedView[=:]\s*(?!null)/.test(s?.stdout.toString("utf8") ?? "")
+    if (bound && served) {
+      ready = true
+      break
+    }
+    await new Promise((resolve) => setTimeout(resolve, 400))
+  }
+  if (!ready) return false
   const b64 = Buffer.from(text, "utf8").toString("base64")
   const r = await runAdb(
     ["shell", "am", "broadcast", "-a", "ADB_INPUT_B64", "--es", "msg", b64],
@@ -207,6 +238,16 @@ async function typeWithAdbKeyboard(
   ).catch(() => null)
   if (!wasAdb && current) {
     await runAdb(["shell", "ime", "set", current], { serial, adbPath, timeoutMs: 10_000 }).catch(() => {})
+    // Let the layout settle back before the agent's next action.
+    for (let i = 0; i < 5; i++) {
+      const m = await runAdb(["shell", "settings", "get", "secure", "default_input_method"], {
+        serial,
+        adbPath,
+        timeoutMs: 10_000,
+      }).catch(() => null)
+      if (m?.stdout.toString("utf8").trim() === current) break
+      await new Promise((resolve) => setTimeout(resolve, 400))
+    }
   }
   return !!r && r.code === 0
 }
@@ -600,7 +641,7 @@ export default Plugin.define({
       tools.add({
         name: "phone_type",
         description:
-          "Type ASCII text into the focused field on the phone. Tap the target field first. Uses the ADB keyboard when available (handles spaces); falls back to 'input text' otherwise. After typing, verify the result with phone_screenshot or phone_dump_ui before the next step. If the screen looks unchanged after an action, do NOT repeat the same action — dump the UI, check logcat, or reconsider.",
+          "Type text into the focused field on the phone (tap the field first). Clean ASCII (no '%') uses 'input text' directly (fast, no IME switching). Anything else (Unicode, emojis, '%') tries clipboard+paste first, then ADBKeyboard as the last resort — the IME is switched, bound, typed, and restored with NO taps in between (switching IME moves the field; tapping old coordinates hits whatever is under them now). After typing, verify the result with phone_screenshot or phone_dump_ui before the next step. If the text didn't land, re-tap the field from a FRESH dump and retry.",
         input: {
           type: "object",
           properties: {
@@ -612,16 +653,42 @@ export default Plugin.define({
         },
         execute: async ({ text, serial }: any) => {
           const { serial: chosen } = await pick(serial)
-          const typed = await typeWithAdbKeyboard(text, chosen, adbPath)
-          if (!typed) {
+          const markTyped = () => {
+            markAction()
+            return textResult(`Typed "${text}" on ${chosen}`)
+          }
+          if (!/[^\x00-\x7F]/.test(text) && !text.includes("%")) {
             await runOrThrow(
               ["shell", "input", "text", escapeInputText(text)],
               { serial: chosen, adbPath },
               "input text",
             )
+            return markTyped()
           }
-          markAction()
-          return textResult(`Typed "${text}" on ${chosen}`)
+          // Non-ASCII or '%': clipboard + paste keyevents first — zero layout
+          // risk. Some devices (Samsung + Gboard) eat injected paste
+          // keyevents; when that happens we fall through to ADBKeyboard.
+          if (await clipboardSet(chosen, text, adbPath)) {
+            const pasted = await runAdb(["shell", "input", "keyevent", "279"], {
+              serial: chosen,
+              adbPath,
+              timeoutMs: 10_000,
+            }).catch(() => null)
+            if (pasted && pasted.code === 0) return markTyped()
+            const combo = await runAdb(["shell", "cmd", "input", "keycombination", "CTRL_LEFT", "V"], {
+              serial: chosen,
+              adbPath,
+              timeoutMs: 10_000,
+            }).catch(() => null)
+            if (combo && combo.code === 0) return markTyped()
+          }
+          // Last resort: ADBKeyboard IME broadcast — no taps, waits for the
+          // bound + served input connection.
+          const typed = await typeWithAdbKeyboard(text, chosen, adbPath)
+          if (typed) return markTyped()
+          throw new Error(
+            `Typing "${text}" failed: clipboard paste didn't take and ADBKeyboard is not installed (install com.android.adbkeyboard and try again)`,
+          )
         },
         options: { codemode: false },
       })
@@ -653,11 +720,82 @@ export default Plugin.define({
         options: { codemode: false },
       })
 
+      tools.add({
+        name: "phone_clear",
+        description:
+          "Clear the focused text field without an IME switch: select-all (Ctrl+A via cmd input keycombination, Android 13+) then Delete. Falls back to the ADBKeyboard ADB_CLEAR_TEXT broadcast if the combo is unavailable. Tap the field first. After clearing, verify the field is empty before typing.",
+        input: {
+          type: "object",
+          properties: {
+            ...serialSchema,
+          },
+          additionalProperties: false,
+        },
+        execute: async ({ serial }: any) => {
+          const { serial: chosen } = await pick(serial)
+          const combo = await runAdb(
+            ["shell", "cmd", "input", "keycombination", "CTRL_LEFT", "A", ";", "input", "keyevent", "67"],
+            { serial: chosen, adbPath, timeoutMs: 10_000 },
+          ).catch(() => null)
+          const comboOut = combo ? `${combo.stdout.toString("utf8")} ${combo.stderr}`.toLowerCase() : ""
+          if (!combo || combo.code !== 0 || /unknown|error/.test(comboOut)) {
+            await runOrThrow(
+              ["shell", "am", "broadcast", "-a", "ADB_CLEAR_TEXT"],
+              { serial: chosen, adbPath },
+              "ADB_CLEAR_TEXT",
+            )
+          }
+          markAction()
+          return textResult(`Cleared the focused field on ${chosen}`)
+        },
+        options: { codemode: false },
+      })
+
+      tools.add({
+        name: "phone_media",
+        description:
+          "Control media playback or volume via the active media session (works regardless of which window has focus — more reliable than media keyevents). Actions: play, pause, play-pause, stop, next, previous, mute, headsethook, rewind, fast-forward. Volume: pass volume (0-15, stream 3 = music by default) to set, or getVolume to read the current index. After an action, verify with dumpsys media_session (phone_shell) or the app UI.",
+        input: {
+          type: "object",
+          properties: {
+            action: {
+              type: "string",
+              enum: ["play", "pause", "play-pause", "stop", "next", "previous", "mute", "headsethook", "rewind", "fast-forward"],
+              description: "Media session action to dispatch",
+            },
+            volume: { type: "number", description: "Set stream volume to this index (0-15)" },
+            getVolume: { type: "boolean", description: "Read the current stream volume index" },
+            stream: { type: "number", description: "Audio stream for volume (default 3 = music)" },
+            ...serialSchema,
+          },
+          additionalProperties: false,
+        },
+        execute: async ({ action, volume, getVolume, stream, serial }: any) => {
+          const { serial: chosen } = await pick(serial)
+          const s = String(stream ?? 3)
+          let args: string[]
+          if (getVolume) {
+            args = ["shell", "cmd", "media_session", "volume", "--stream", s, "--get"]
+          } else if (volume != null) {
+            args = ["shell", "cmd", "media_session", "volume", "--stream", s, "--set", String(volume)]
+          } else if (action) {
+            args = ["shell", "cmd", "media_session", "dispatch", action]
+          } else {
+            throw new Error("phone_media needs an action, a volume, or getVolume")
+          }
+          const result = await runOrThrow(args, { serial: chosen, adbPath, timeoutMs: 10_000 }, "media")
+          const out = result.stdout.toString("utf8").trimEnd()
+          markAction()
+          return textResult(getVolume ? `Volume: ${out || "(no output)"}` : out || `Sent media ${action ?? `volume ${volume}`} to ${chosen}`)
+        },
+        options: { codemode: false },
+      })
+
       // ── app / environment ──────────────────────────────────────────────────
       tools.add({
         name: "phone_open",
         description:
-          "Launch an app on the phone by its package name (e.g. com.instagram.android, com.android.settings). The package must have a launcher activity.",
+          "Launch an app by package name (e.g. com.instagram.android). Resolves the launcher activity, launches with --activity-no-animation and waits for the launch to land (-W); reports whether it was a cold/warm launch or an existing task brought to front. Deep links / specific screens: use phone_shell with 'am start -a android.intent.action.VIEW -d <uri> <pkg>'.",
         input: {
           type: "object",
           properties: {
@@ -669,14 +807,30 @@ export default Plugin.define({
         },
         execute: async ({ package: pkg, serial }: any) => {
           const { serial: chosen } = await pick(serial)
-          const result = await runOrThrow(
-            ["shell", "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"],
+          const resolved = await runAdb(
+            ["shell", "cmd", "package", "resolve-activity", "--brief", pkg],
+            { serial: chosen, adbPath, timeoutMs: 15_000 },
+          ).catch(() => null)
+          const out = resolved?.stdout.toString("utf8").trim() ?? ""
+          const lines = out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+          const comp = [...lines].reverse().find((l) => l.startsWith(`${pkg}/`) && !/^error/i.test(l))
+          if (!comp) {
+            throw new Error(
+              `Could not resolve a launcher activity for ${pkg} (${out || "no resolve-activity output"}). Is it installed?`,
+            )
+          }
+          const launch = await runOrThrow(
+            ["shell", "am", "start", "-W", "--activity-no-animation", "-n", comp],
             { serial: chosen, adbPath, timeoutMs: 20_000 },
             "launch app",
           )
+          const launchOut = launch.stdout.toString("utf8")
+          const status = /Status:\s*(\w+)/.exec(launchOut)?.[1]
+          const state = /LaunchState:\s*(\w+)/.exec(launchOut)?.[1]
+          const warning = /Warning:\s*(.*)/.exec(launchOut)?.[1]
           markAction()
           return textResult(
-            `Launched ${pkg} on ${chosen}.${result.stdout.toString("utf8").includes("Error") ? " The package may not be installed or has no launcher activity." : ""}`,
+            `Launched ${comp} on ${chosen}.${status ? ` Status: ${status}` : ""}${state ? `, LaunchState: ${state}` : ""}${warning ? ` — ${warning}` : ""}${/Error/i.test(launchOut) ? " (launch reported an error)" : ""}`,
           )
         },
         options: { codemode: false },
@@ -742,21 +896,22 @@ export default Plugin.define({
       tools.add({
         name: "phone_shell",
         description:
-          "Run an arbitrary adb shell command on the phone and return its output. Escape hatch for anything the other phone tools don't cover (e.g. 'pm list packages', 'dumpsys battery', 'settings put global window_animation_scale 0').",
+          "Run an arbitrary adb shell command on the phone and return its output (long commands up to 120s; pass timeoutMs to extend). Escape hatch for anything the other phone tools don't cover (e.g. 'pm list packages', 'dumpsys battery', 'settings put global window_animation_scale 0').",
         input: {
           type: "object",
           properties: {
             command: { type: "string", description: "Shell command to run on the device" },
+            timeoutMs: { type: "number", description: "Optional timeout in ms (default 120000)" },
             ...serialSchema,
           },
           additionalProperties: false,
           required: ["command"],
         },
-        execute: async ({ command, serial }: any) => {
+        execute: async ({ command, serial, timeoutMs }: any) => {
           const { serial: chosen } = await pick(serial)
           const result = await runOrThrow(
             ["shell", command],
-            { serial: chosen, adbPath, timeoutMs: 30_000 },
+            { serial: chosen, adbPath, timeoutMs: Math.max(1_000, timeoutMs ?? 120_000) },
             `shell "${command.slice(0, 80)}"`,
           )
           const out = result.stdout.toString("utf8").trimEnd()

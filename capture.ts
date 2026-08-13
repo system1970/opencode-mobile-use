@@ -366,7 +366,7 @@ export async function socketShell(serial: string, command: string): Promise<stri
       const timer = setTimeout(() => {
         cleanup()
         reject(new Error("adb: timed out waiting for shell output"))
-      }, 20_000)
+      }, 60_000)
       const onData = (chunk: Buffer) => {
         data.push(chunk)
       }
