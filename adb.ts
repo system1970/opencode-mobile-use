@@ -164,8 +164,20 @@ export async function listDevices(
   const devices: AdbDevice[] = []
   for (const line of result.stdout.toString("utf8").split(/\r?\n/).slice(1)) {
     if (!line.trim()) continue
-    const [serial, state, ...rest] = line.trim().split(/\s+/)
-    if (!serial || serial === "*" || state === undefined) continue
+    // mDNS rediscoveries append a counter to the service name that CONTAINS A
+    // SPACE: `adb-RZGL61TDYQL-pAXli0 (2)._adb-tls-connect._tcp device ...`.
+    // Splitting on whitespace breaks the serial. Instead, find the state token
+    // (the first token that is a known adb state) and treat everything before
+    // it as the serial.
+    const tokens = line.trim().split(/\s+/)
+    const stateIdx = tokens.findIndex((t) =>
+      /^(device|offline|unauthorized|authorizing|connecting|recovery|sideload|bootloader|host|disconnected|no permissions)/.test(t),
+    )
+    if (stateIdx < 1) continue
+    const serial = tokens.slice(0, stateIdx).join(" ")
+    const state = tokens[stateIdx]
+    const rest = tokens.slice(stateIdx + 1)
+    if (!serial || serial === "*") continue
     const device: AdbDevice = { serial, state }
     for (const kv of rest) {
       const [key, value] = kv.split(":")
