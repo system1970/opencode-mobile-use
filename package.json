@@ -1,6 +1,6 @@
 {
   "name": "opencode-mobile-use",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Control an Android phone from OpenCode: live phone screen in the TUI sidebar, agent tools for taps/typing/swipes/UI dumps, app-specific skills, and a built-in phone-vision subagent. Works over USB, wireless, or Tailscale.",
   "type": "module",
   "exports": {
