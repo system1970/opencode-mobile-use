@@ -2,7 +2,8 @@
 
 Control an Android phone from OpenCode — with a **live phone screen in the TUI sidebar**, full agent tooling, and a built-in phone-vision subagent.
 
-<video src="docs/demo.mp4" controls muted></video>
+<video src="https://github.com/user-attachments/assets/6bbf6547-8d87-4949-988c-55d7d7919b05" controls muted></video>
+
 
 ## What it does
 
