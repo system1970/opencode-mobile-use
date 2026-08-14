@@ -2,7 +2,7 @@
 
 Control an Android phone from OpenCode — with a **live phone screen in the TUI sidebar**, full agent tooling, and a built-in phone-vision subagent.
 
-![OpenCode TUI with the live phone sidebar showing Spotify playing greedy](docs/demo.png)
+<video src="docs/demo.mp4" controls muted></video>
 
 ## What it does
 
