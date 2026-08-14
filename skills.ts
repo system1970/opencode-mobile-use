@@ -32,130 +32,160 @@ export const SKILLS: Skill.Info[] = [
       "Drive an Android phone connected to this machine over adb: see the screen, tap, type, swipe, launch apps, dump the UI tree, read logs. Use whenever the user wants anything done on, or with, their phone or an app on it.",
     content: `# Mobile Use
 
-> When starting ANY mobile task, load this skill explicitly via the \`skill\`
-> tool first — don't rely on autoinvoke (it may not re-inject after a service
-> restart). Then act from its rules, not from tool-description habits.
+> Load this skill explicitly via the \`skill\` tool at the start of ANY mobile
+> task (autoinvoke may not re-inject after a restart). Act from these rules,
+> not from tool-description habits. The app skills (spotify, x, whatsapp,
+> camera, phone-call, github) load AFTER this one and assume its rules are in
+> force — so the shared loop, screen-reading, typing and keep-alive rules
+> live here, once.
 
-Control an Android phone connected to this machine via the \`phone_*\` tools
-(\`phone_devices\`, \`phone_dump_ui\`, \`phone_screenshot\`, \`phone_tap\`,
-\`phone_swipe\`, \`phone_type\`, \`phone_clear\`, \`phone_key\`,
-\`phone_media\`, \`phone_open\`, \`phone_install\`, \`phone_logcat\`,
-\`phone_shell\`, \`phone_adb\`).
+Control an Android phone via the \`phone_*\` tools (\`phone_devices\`,
+\`phone_dump_ui\`, \`phone_screenshot\`, \`phone_tap\`, \`phone_swipe\`,
+\`phone_type\`, \`phone_clear\`, \`phone_key\`, \`phone_media\`,
+\`phone_open\`, \`phone_install\`, \`phone_logcat\`, \`phone_shell\`,
+\`phone_adb\`).
 
 ## Connect first
 
-Run \`phone_devices\`. Nothing online? Guide the user: \`/phone-connect\`
-(wireless) or \`/phone-connect-remote\` (Tailscale) in the TUI, or plug in via
-USB and tap Allow. Don't retry tools until a device is online. With multiple
-devices, pass the serial to every tool.
+Run \`phone_devices\` and get a device online before any other tool:
+\`/phone-connect\` (wireless) or \`/phone-connect-remote\` (Tailscale) in the
+TUI, or USB + Allow. With multiple devices, pass the serial to every tool.
 
 ## Deep links first — navigate with intents, not taps
 
-Prefer deep links / explicit intents over walking the UI. They are faster,
-dodge flaky typing, and skip fragile tap sequences:
+Deep links are faster, dodge flaky typing, and skip fragile tap sequences.
+They are the PRIMARY navigation; tap-walking the UI is the fallback.
 
-- **Launch straight to a destination**: \`phone_shell\` →
+- **Launch to a destination**: \`phone_shell\` →
   \`am start -a android.intent.action.VIEW -d "<uri>" <package>\` — e.g.
   \`spotify:track:<id>\`, \`spotify:search:<query>\` (spaces as %20),
   \`whatsapp://chat\`.
-- **Resolve IDs on the web first**: \`websearch\` for
-  \`<thing> open.spotify.com/track\` (or /album, /playlist, /artist) and read
-  the ID from the result URL — prefer the canonical entry (highest play
-  count) over remixes/compilations.
-- **Deep links beat typing**: search-typing silently fails with some IMEs;
-  \`spotify:search:<query>\` pre-fills the field AND runs the search with
-  zero keystrokes.
-- **Caveats**: deep links usually navigate WITHOUT auto-playing and may pause
-  current playback — tap the row or the Play button (\`desc="Play"\`)
-  afterwards, then verify.
-- **UI walking (dump → tap) is the FALLBACK** when no deep link exists or a
-  link fails — never tap through the UI first when a link can take you there.
+- **Verify resolution BEFORE launching**: \`cmd package resolve-activity
+  --brief -a android.intent.action.VIEW -d "<uri>"\` must return
+  <pkg>/<activity>, not ResolverActivity or "No activity found". Add
+  \`-p <pkg>\` to force the app for https App Links (unverified links go to
+  the browser on 12+).
+- **Resolve IDs from a loaded doc first**: if a skill or doc already carries
+  the canonical ID (e.g. greedy = \`spotify:track:6wCv0m87EJ6kYGUi5c0kbG\`),
+  use it. \`websearch\` for \`open.spotify.com/track\` and friends only when
+  no ID is documented — re-resolving risks a wrong or duplicate ID.
+- **Know what YOUR link does before acting on the screen**: music links
+  start playback (see below); \`x.com\` links land on a canvas screen where
+  a dump error is a reading-method failure, not a link failure. When a deep
+  link resolves and lands, keep it — re-navigating manually throws away the
+  working state.
+
+## Playback after a deep link — the pause is yours
+
+\`spotify:track:<id>\` AUTO-PLAYS the track. Any screen capture
+(\`phone_dump_ui\` / \`phone_screenshot\`) pauses media while it runs — the
+dump header says so — so a Paused reading right after a capture is YOUR
+artifact, not a failed link. Verify audio in dumpsys, never in pixels:
+
+1. Read \`dumpsys media_session | grep state=PlaybackState\` with NO capture
+   in between.
+2. If the first read says Paused, sample a SECOND time (wait a beat, no
+   capture). Second read PLAYING, or the position ticked forward → the
+   capture caused the pause: touch nothing.
+3. Only issue \`phone_media play\` when two clean samples both read Paused.
+4. Never capture the screen to "verify" audio — the capture invents a pause
+   you then have to undo.
 
 ## The loop — look, act, verify
 
-1. \`phone_dump_ui\` or \`phone_screenshot\` to see where things are.
-2. Act: \`phone_tap\` / \`phone_type\` / \`phone_swipe\` / \`phone_key\` / \`phone_open\`.
-3. Re-dump or re-screenshot. Did the screen change as expected? If not, adjust —
-   never repeat the same action blindly. This applies to EVERY step, even small
-   ones (clearing a field, dismissing a dialog): if you don't verify, you'll act
-   on stale state and pay for it twice.
+1. See where things are: \`phone_dump_ui\` (text screens) or
+   \`phone_screenshot\` (canvas screens — see below).
+2. Act: \`phone_tap\` / \`phone_type\` / \`phone_swipe\` / \`phone_key\` /
+   \`phone_open\`.
+3. Re-check: did the screen change as expected? Adjust if not. A step is
+   DONE when the screen shows the expected change — verify every step, even
+   small ones (clearing a field, dismissing a dialog), or you act on stale
+   state and pay twice. If the screen is unchanged after an action, do NOT
+   repeat the action: re-check focus, dump, or \`phone_logcat\` and
+   reconsider.
+
+## Screen reading — dump vs screenshot
+
+- **Text screens** (playlists, search results, settings, chats) expose text
+  in the accessibility tree → \`phone_dump_ui\` first. A dump that RETURNS
+  with content is not a failure.
+- **Canvas screens** (Spotify/Instagram/X home, X post detail, Flutter apps,
+  video) are sparse → \`phone_screenshot\` + a vision read directly; don't
+  burn dump retries. An ERRORING dump is the signal to switch to vision, not
+  a reason to abandon the navigation that got you here.
+- **A screenshot is only worth taking if someone reads it**: if your model
+  can't view images, hand the returned file path to a vision subagent in the
+  same breath, or don't capture. Use the vision tiers in order: (1) your own
+  model if it supports image input; (2) the user's \`vision\` subagent; (3)
+  \`phone-vision\` last. When a vision read looks off, cross-check it against
+  the dump (text nodes usually survive even on canvas screens).
+- **Full-res for icon state**: badges and toggles (Spotify's repeat "1",
+  shuffle) are illegible downscaled — capture full-res and tell vision the
+  exact bounds. Where the state matters, verify behaviorally instead (sample
+  the state twice over time, e.g. track position resetting = repeat-one)
+  rather than trusting one icon read.
+
+## Think before you act
+
+- **Confirm focus after any launch**: after \`am start\` / \`phone_open\`,
+  run \`dumpsys window | grep mCurrentFocus\` FIRST. A cached dump from the
+  previous app is a trap — never tap from it.
+- **Re-tap, don't re-dump**: if an action failed but a cheap state check
+  (\`dumpsys media_session\`, \`dumpsys window\`) proves nothing changed,
+  re-tap the SAME coordinates — a full \`phone_dump_ui\` adds zero
+  information there.
+- **Fresh zero-engagement items sit at the bottom** of engagement-sorted
+  lists (X "Quotes", feeds). Verify your own just-posted item via your
+  profile, a count delta, or the Sort control — don't walk ten
+  scroll+dump cycles.
+- **A closed composer IS delivery**: the composer closing proves the post
+  went out. Pick the cheapest check that proves landing and move on — don't
+  re-verify the same fact twice.
 
 ## Rules
 
-- **One pixel space** across screenshots, dumps and taps. Tap bounds centers:
-  [l,t,r,b] → ((l+r)/2, (t+b)/2).
-- **Stale dump?** \`phone_dump_ui\` reports the focused window — if the elements
-  don't match it, retry the dump before acting.
-- **Can't see images?** use the VISION TIERS in strict order — never skip a
-  tier: (1) your own model, if it supports image input — always first;
-  (2) only if it can't: the user's \`vision\` subagent, if they have one set
-  up; (3) only if neither exists: \`phone-vision\` (MiMo) as the final
-  fallback. Pass the screenshot file path. Never jump straight to tier 3.
-- **dump vs vision by screen type**: list screens (playlists, search
-  results, settings, chats) expose text in the accessibility tree — use
-  \`phone_dump_ui\` there first. Canvas-rendered screens (Spotify/Instagram/X
-  home, Flutter apps, video) are sparse — go straight to
-  \`phone_screenshot\` + the vision tiers, don't waste dump retries. A dump
-  that RETURNS with content is not a failure — only erroring dumps mean
-  switch to vision. When a vision reading looks off, cross-check it against
-  the dump (text nodes usually survive even on canvas screens).
-- **Tiny icon-state checks need FULL-RES screenshots**: badges, toggles and
-  mode indicators (e.g. Spotify's repeat "1", shuffle state) are illegible
-  on downscaled captures — vision will hallucinate them. Use
-  \`phone_screenshot\` WITHOUT \`small\`/\`scale\` and tell vision to zoom
-  into the exact icon bounds. When the state matters (repeat-one, loop,
-  toggle), prefer behavioral verification: sample the state twice over time
-  (e.g. track position resetting = repeat-one) instead of trusting one
-  icon read.
-- **Clearing a text field**: taps on an in-app clear (X) button are unreliable
-  in Flutter/WebView fields — instead send \`am broadcast -a ADB_CLEAR_TEXT\`
-  via \`phone_shell\` (ADBKeyboard), then verify the field is empty before
-  typing.
-- **Type**: tap the field first. \`phone_type\`: clean ASCII (no '%') →
-  \`input text\` (fast, no IME switching); anything else (Unicode, emojis,
-  '%') → clipboard+paste keyevents first, then ADBKeyboard IME broadcast as
-  the fallback — the switch/restore is done with NO taps (switching IME
-  MOVES the focused field; a tap at old coordinates hits whatever is there
-  now). If the text didn't land, re-tap the field from a FRESH dump and
-  retry — never from memory. \`phone_clear\` clears the focused field
-  (Ctrl+A + Del). Never bypass \`phone_type\` with a raw \`input text\`
-  yourself.
-- **Media control**: use \`phone_media\` (cmd media_session dispatch —
-  reaches the active session regardless of focus) instead of media
-  keyevents. Repeat/shuffle state has NO shell API — read/set it in the
-  app UI only. \`dumpsys media_session --active\` (via \`phone_shell\`)
-  confirms PLAYING/PAUSED + the actual track.
-- **Wake/unlock**: screen off → \`input keyevent 224\` (WAKEUP) then
-  \`input keyevent 82\` (MENU) — the 224+82 pair is required on Samsung
-  (WAKEUP alone can blank right back). \`wm dismiss-keyguard\` only works
-  for non-secure locks; PIN needs \`input text <pin>\` + ENTER on the
-  bouncer (type fast — ~7s budget).
-- **Keep the link alive**: Samsung kills wireless adb when the screen
-  locks / display sleeps (link dies mid-command — that's why long
-  commands fail with no output). For long operations:
+- **One pixel space** across screenshots, dumps and taps. Tap bounds
+  centers: [l,t,r,b] → ((l+r)/2, (t+b)/2).
+- **Stale dump?** \`phone_dump_ui\` reports the focused window — retry if
+  the elements don't match it.
+- **Type**: tap the field first, then \`phone_type\`. Clean ASCII (no '%')
+  goes via \`input text\` (fast); anything else (Unicode, emojis, '%') goes
+  clipboard+paste first, then ADBKeyboard. The IME switch/restore happens
+  with NO taps — switching moves the focused field, and a tap at old
+  coordinates hits whatever is there now. If text didn't land, re-tap the
+  field from a FRESH dump and retry. Use \`phone_clear\` (Ctrl+A + Del) to
+  clear, then verify the field is empty before typing. Route all typing
+  through \`phone_type\`.
+- **Clearing a field**: taps on in-app clear (X) buttons are unreliable in
+  Flutter/WebView fields — send \`am broadcast -a ADB_CLEAR_TEXT\` via
+  \`phone_shell\`, then verify the field is empty.
+- **Media control**: \`phone_media\` (cmd media_session dispatch) reaches the
+  active session regardless of focus. Repeat/shuffle has NO shell API — read
+  and set it in the app UI. \`dumpsys media_session --active\` confirms
+  PLAYING/PAUSED + the actual track title.
+- **Wake/unlock**: screen off → \`input keyevent 224\` (WAKEUP) then \`input
+  keyevent 82\` (MENU) — the 224+82 pair is required on Samsung (WAKEUP alone
+  can blank right back). \`wm dismiss-keyguard\` only clears non-secure
+  locks; PIN needs \`input text <pin>\` + ENTER on the bouncer, typed fast
+  (~7s budget).
+- **Keep the link alive**: Samsung kills wireless adb when the display
+  sleeps — the link dies mid-command, which is why long commands fail with
+  no output. FRONT-LOAD at the start of any multi-app / multi-step session:
   \`svc power stayon true\`, \`dumpsys deviceidle disable\`,
-  \`settings put system screen_off_timeout 2147483647\`; do long waits
+  \`settings put system screen_off_timeout 2147483647\`. Do long waits
   host-side, never \`sleep\` >10s on-device. If the link dies, reconnect
   (\`adb connect\` / \`/phone-connect\`) and re-wake (224, 82).
-- **Animations**: \`settings put global window_animation_scale 0.5\`
-  (+ transition_animation_scale, animator_duration_scale) — 0.5 not 0.0
-  on OneUI 6.1+ (0.0 causes layout/a11y glitches). Speeds everything up
-  and reduces uiautomator idle failures. OneUI's a11y "Remove animations"
-  toggle resets these keys — if they keep reverting, that's the culprit.
-- **Deep links**: verify the URI resolves to the target app BEFORE
-  launching: \`cmd package resolve-activity --brief -a
-  android.intent.action.VIEW -d "<uri>"\` — expect <pkg>/<activity>, not
-  ResolverActivity or "No activity found". Add \`-p <pkg>\` to force the
-  app for https App Links (unverified links go to the browser on 12+).
-- **Screen off/locked**: \`phone_key power\`, swipe up twice.
-- **Scroll**: vertical swipes; \`durationMs\` 100 = fling. Scroll until the target
-  appears, then dump.
-- **After \`phone_open\`**, confirm the app launched.
+- **Animations**: \`settings put global window_animation_scale 0.5\` (+
+  transition_animation_scale, animator_duration_scale) — 0.5 not 0.0 on
+  OneUI 6.1+ (0.0 causes layout/a11y glitches). OneUI's a11y "Remove
+  animations" toggle resets these keys.
+- **Scroll**: vertical swipes; \`durationMs\` 100 = fling. Scroll until the
+  target appears, then dump.
 - **Crashes**: \`phone_logcat\` with \`AndroidRuntime:E *:S\` or an app tag.
-- **Animations mislead taps**: taps land at the pixel. If a tap misses, re-dump
-  and retry.
-- **App missing?** \`phone_shell\` → \`pm list packages | grep <name>\`;
-  \`phone_install\` the APK.
+- **Animations mislead taps**: taps land at the pixel — re-dump and retry
+  after a miss.
+- **App missing?** \`pm list packages | grep <name>\`; \`phone_install\` the
+  APK.
 - **Anything else adb can do**: \`phone_shell\`.`,
   }),
   makeSkill({
@@ -165,113 +195,131 @@ dodge flaky typing, and skip fragile tap sequences:
       "Automate WhatsApp on the user's Android phone via the mobile-use tools — open the app, find a chat or group, send messages, and verify delivery. Use whenever the user asks to open WhatsApp, message someone, post in a group, or check WhatsApp activity.",
     content: `# WhatsApp Automation (via mobile-use)
 
-The phone must be connected: check \`phone_devices\` first; if none, guide the
-user to \`/phone-connect\` in the TUI or plug in via USB.
+Loaded after \`mobile-use\` — its connect / look-act-verify / typing rules
+are in force.
 
 ## Workflow
 
-1. **Open**: \`phone_open\` with package \`com.whatsapp\`. It may restore into
-   the last-open chat — if you need the chat list, \`phone_key back\` first.
-2. **Find the chat**: \`phone_dump_ui\` (maxNodes ~60). Row names are
-   \`TextView\`s; group names may render emoji as \`&#...;\` entities — match
-   the plain text part (e.g. \`Campus Group\`).
-3. **Open the chat**: tap the row's center, re-dump, and confirm the header —
-   WhatsApp reorders chats by activity, so the list can shift between dump and
-   tap.
-4. **Type**: tap the \`Message\` \`EditText\` (bottom of the screen), then
-   \`phone_type\`. ASCII only — spaces are handled; emojis, em-dashes and
-   non-English scripts fail, so transliterate. Avoid quotes and backslashes.
-5. **Send**: a \`Send\` button appears to the right of the input only after
-   typing. Tap it.
-6. **Verify**: re-dump — your message shows as a \`TextView\` with a timestamp
-   and a \`Delivered\`/\`Sent\` status. Report success only then.
+1. **Open**: \`phone_open\` with package \`com.whatsapp\`. It may restore
+   into the last-open chat — \`phone_key back\` once to reach the chat list.
+2. **Find the chat — search, don't scroll**: the chat list is activity-
+   sorted and can be long. Tap the search bar (\`desc="Ask Meta AI or
+   Search"\`) and \`phone_type\` the chat name — the row lands instantly.
+   Group names may render emoji as \`&#...;\` entities — match the plain text
+   part (e.g. \`Campus Group\`).
+3. **The self-DM is NOT labeled "You"**: the "Message yourself" chat shows
+   the account's display name with a \`(You)\` suffix (e.g. \`Hhh (You)\`) and
+   the subtitle \`Message yourself\`. Search the account's display name to
+   find it. The display name alone is NOT proof — a contact shares it (e.g.
+   a friend named identically). Match the \`(You)\` suffix or the
+   \`Message yourself\` subtitle before tapping.
+4. **Open the chat**: tap the row's center, re-dump, and confirm the HEADER
+   (top bar name + \`Message yourself\` subtitle for the self-DM) — WhatsApp
+   reorders chats by activity, so the list can shift between dump and tap.
+5. **Type**: tap the \`Message\` \`EditText\` (bottom of the screen), then
+   \`phone_type\`. ASCII only — transliterate emojis, em-dashes and
+   non-English scripts; avoid quotes and backslashes.
+6. **Send**: the \`Send\` button appears to the right of the input only after
+   text exists — tap it.
+7. **Verify**: your message shows as a \`TextView\` with a timestamp and a
+   \`Delivered\`/\`Sent\` status (the self-DM shows \`Read\`). Report success
+   only then.
 
 ## When it misbehaves
 
-- **Stale dump**: the hierarchy can lag behind the real screen (e.g. shows a
-  chat you didn't open). Before tapping, confirm the foreground app with
-  \`phone_shell\` → \`dumpsys window | grep mCurrentFocus\`.
-- **Wrong screen**: \`phone_key back\` until you reach the chat list, then re-dump.
-- **Unread filter**: the \`Unread\` chip narrows the list; unread counts appear
-  in row content-desc.
-- **No change after an action**: do NOT repeat it — re-dump, check
-  \`phone_logcat\`, reconsider.`,
+- **Wrong chat opened**: back out, re-search, and match the header before
+  typing — you confirm first.
+- **Unread filter**: the \`Unread\` chip narrows the list; unread counts
+  appear in row content-desc.
+- **Stale dump**: confirm the foreground app (\`dumpsys window | grep
+  mCurrentFocus\`) before tapping.`,
   }),
   makeSkill({
     id: "x",
     name: "x",
     description:
-      "Automate X (Twitter) on the user's Android phone via the mobile-use tools — open the app, navigate the timeline, read posts, and send direct messages. Use whenever the user asks to open X, check or post something, or DM someone on X.",
+      "Automate X (Twitter) on the user's Android phone via the mobile-use tools — open the app, navigate the timeline, read posts, quote or reply to posts, and send direct messages. Use whenever the user asks to open X, check or post something, quote a tweet, or DM someone on X.",
     content: `# X (Twitter) Automation (via mobile-use)
 
-The phone must be connected: check \`phone_devices\` first; if none, guide the
-user to \`/phone-connect\` in the TUI or plug in via USB.
+Loaded after \`mobile-use\` — its connect / look-act-verify / canvas-screen
+rules are in force.
 
-## Opening and the home timeline
+## Opening a post directly — deep links first
 
-1. **Open**: \`phone_open\` with package \`com.twitter.android\`.
-2. **Landing**: Home timeline with tabs \`For you\` / \`Following\` / \`Local AI\`.
-   Posts show author, handle, time, text, and an action row (Reply / Repost /
-   Like / Bookmark / Share with counts). Top-left avatar opens the navigation
-   drawer (\`desc="Show navigation drawer"\`).
+\`x.com\` post links WORK via intent and land on the post detail, not the
+home feed:
 
-## The bottom nav trap
+- \`phone_shell\` →
+  \`am start -a android.intent.action.VIEW -d "https://x.com/<user>/status/<id>" com.twitter.android\`.
+- X renders posts as a CANVAS — verify with \`phone_screenshot\` + a vision
+  read, not \`phone_dump_ui\`. A dump error here is a reading-method failure,
+  not a link failure: screenshot once before ever considering manual
+  navigation, and don't abandon a link that resolved.
+- Only if the screenshot shows "Unable to load" or an error page: back out,
+  use Search for the user, and open the post in-app.
 
+## Home timeline and the nav
+
+- \`phone_open\` with \`com.twitter.android\` → Home with tabs \`For you\` /
+  \`Following\` / \`Local AI\`. Posts show author, handle, time, text and an
+  action row (Reply / Repost / Like / Bookmark / Share with counts).
 - The 5-tab bottom bar (Home / Explore / Grok / Notifications / Messages) is
-  only visible when the composer is closed.
-- A **reply composer** ("Post your reply" pill) often overlays the bottom —
-  e.g. after an app restore or a stray tap. If \`phone_dump_ui\` shows no nav
-  icons but a composer at the bottom, press \`phone_key back\` once to dismiss
-  it, then re-dump.
+  only visible when the composer is closed. A reply composer ("Post your
+  reply" pill) often overlays the bottom after an app restore or a stray tap
+  — \`phone_key back\` once dismisses it, then re-read the screen.
 
-## Navigating to Direct Messages
+## Quote a post (with your text) — Repost → Quote
 
-1. Tap **Messages** (bottom-right, \`desc="Messages"\`), or open the drawer and
-   pick Messages.
-2. **Chat list**: each row's content-desc packs the whole row —
-   \`Name, @handle, snippet, time\` (e.g. \`You, You sent a post, 2 hours\`).
-   The \`You\` row is the user's self-DM (their own notes); its header shows
-   their own name.
-3. **Open a chat**: tap the row's center, then re-dump and confirm the HEADER
-   (top bar name) — the list shifts between dump and tap, and a stale tap can
-   open the wrong conversation. Back (\`desc="Back"\`, top-left) if wrong.
-4. **Send a DM**: tap the \`Message\` \`EditText\` (bottom), \`phone_type\`
-   (ASCII only — transliterate emojis), then tap the \`Send\` button that
-   appears to the right of the input.
-5. **Verify**: re-dump — your message shows as \`You: <text>. just now.\` with
-   a Read/Delivered status. Report success only then.
+1. On the post detail, tap the **Repost** control in the action row (the
+   crossed-arrows icon, carries a count).
+2. In the bottom sheet, tap **Quote** (pencil icon).
+3. The quote composer opens with the original post attached. Tap the text
+   field and \`phone_type\` your quote (ASCII; transliterate emojis).
+4. Tap **Post** (top-right, the blue pill).
+5. Verify: the composer closing = posted. To confirm a count you can check,
+   your quote appears under the original post's Quotes list — fresh
+   zero-engagement items sort to the BOTTOM, so check your own profile or a
+   count delta instead of scrolling.
+
+## Direct Messages
+
+1. Tap **Messages** (bottom-right, \`desc="Messages"\`), or open the drawer
+   and pick Messages.
+2. Chat rows pack the whole row into content-desc — \`Name, @handle, snippet,
+   time\`. The \`You\` row is your own notes.
+3. Open a chat: tap the row's center, re-dump, confirm the HEADER (top bar
+   name) — the list shifts between dump and tap. Back (\`desc="Back"\`,
+   top-left) if wrong.
+4. Send: tap the \`Message\` \`EditText\` (bottom), \`phone_type\` (ASCII),
+   tap \`Send\`. Verify the bubble shows as \`You: <text>. just now.\` with a
+   Read/Delivered status.
 
 ## When it misbehaves
 
-- **Deep links fail**: opening x.com URLs via intents can show
-  \`Unable to load — Please try again later\`. Navigate manually instead —
-  back out and use the in-app tabs/nav.
-- **Stray taps land on posts/profiles**: the timeline is dense. If you end up
-  on a post detail or someone's profile (with a \`Post your reply\` composer),
-  back out and re-dump before continuing.
+- **Stray taps land on posts/profiles**: the timeline is dense. If you end
+  up on a post detail or someone's profile, back out and re-read the screen
+  before continuing.
+- **Post didn't send**: the composer staying open is the signal — re-post.
 - **Stale dump**: confirm the foreground app (\`dumpsys window | grep
-  mCurrentFocus\`) if the dump doesn't match what you expect.
-- **No change after an action**: do NOT repeat it — re-dump, check
-  \`phone_logcat\`, reconsider.`,
+  mCurrentFocus\`).`,
   }),
   makeSkill({
     id: "camera",
     name: "camera",
     description:
-      "Automate the camera on the user's Android phone via the mobile-use tools — open the camera app, switch between front/rear lenses, take photos, and pull them to the laptop. Use whenever the user asks to take a photo, selfie, or picture, or open the camera app.",
+      "Automate the camera on the user's Android phone via the mobile-use tools — open the camera app, switch between front/rear lenses, take photos, and pull them to the laptop. Use whenever the user asks to take a photo or selfie, or open the camera app.",
     content: `# Camera Automation (via mobile-use)
 
-The phone must be connected: check \`phone_devices\` first; if none, guide the
-user to \`/phone-connect\` in the TUI or plug in via USB.
+Loaded after \`mobile-use\` — its connect / look-act-verify rules are in
+force.
 
 ## Launch — package, not launcher icons
 
 1. Find the package: \`phone_shell\` → \`pm list packages | grep -i camera\`
-   (Samsung example: \`com.sec.android.app.camera\`).
-2. \`phone_open\` with that package. Launcher-icon taps drift between screens
-   (launcher layouts shift between dumps); package launch is exact.
-3. Confirm launch: \`phone_shell\` → \`dumpsys window | grep mCurrentFocus\`
-   should show \`...Camera\`.
+   (Samsung example: \`com.sec.android.app.camera\`). Package launch is
+   exact; launcher-icon taps drift between screens.
+2. \`phone_open\` with that package. Confirm launch: \`phone_shell\` →
+   \`dumpsys window | grep mCurrentFocus\` should show \`...Camera\`.
 
 ## Layout (Samsung One UI; other skins differ — re-dump before assuming)
 
@@ -281,23 +329,23 @@ user to \`/phone-connect\` in the TUI or plug in via USB.
 - Shutter: \`desc="Take picture"\`.
 - Last-photo preview: \`desc="View pictures and videos"\` (bottom-left).
 
-## Front vs rear — the dump is the truth
+## Front vs rear — judge by the dump, not the viewfinder
 
-- NEVER judge camera direction from the viewfinder scene. A front camera
-  pointed at a ceiling (phone face-up) looks identical to a rear shot, and
-  vision models misjudge it — trust the dump.
 - The flip button's content-desc states what the button DOES:
   - \`desc="Switch to rear camera"\` → front camera ACTIVE
   - \`desc="Switch to front camera"\` → rear camera ACTIVE
 - Flip = tap the button's bounds center, re-dump, confirm the desc flipped.
+- The viewfinder scene can't tell you the direction — a front camera pointed
+  at a ceiling (phone face-up) looks identical to a rear shot, and vision
+  models misjudge it. The dump descs don't.
 
 ## Take the photo
 
 1. Tap shutter (\`desc="Take picture"\`) bounds center.
-2. Verify capture: thumbnail preview updates, or
+2. Verify capture: the thumbnail preview updates, or
    \`ls -t /sdcard/DCIM/Camera/ | head -1\` shows a new \`YYYYMMDD_HHMMSS.jpg\`.
-3. Dark/covered viewfinder? Tell the user a shot of a lens cap isn't a result —
-   don't claim success.
+3. A dark/covered viewfinder isn't a result — tell the user a shot of a lens
+   cap isn't success.
 
 ## Deliver the photo to the laptop
 
@@ -315,9 +363,7 @@ user to \`/phone-connect\` in the TUI or plug in via USB.
 - **Stray taps exit the camera**: confirm the focus window before every step.
 - **Permission dialog on first launch**: tap Allow.
 - **Low battery / screen off**: \`phone_key power\`, swipe up twice; warn on
-  critically low battery.
-- **No change after an action**: do NOT repeat it — re-dump, check
-  \`phone_logcat\`, reconsider.`,
+  critically low battery.`,
   }),
   makeSkill({
     id: "spotify",
@@ -326,92 +372,73 @@ user to \`/phone-connect\` in the TUI or plug in via USB.
       "Automate Spotify on the user's Android phone via the mobile-use tools — open the app, search for songs or albums, play tracks, and verify what's actually playing. Use whenever the user asks to play a song, artist, album, or playlist on Spotify.",
     content: `# Spotify Automation (via mobile-use)
 
-The phone must be connected: check \`phone_devices\` first; if none, guide the
-user to \`/phone-connect\` in the TUI or plug in via USB.
+Loaded after \`mobile-use\` — its connect / look-act-verify / playback /
+keep-alive rules are in force.
 
 ## Launch
 
-1. \`phone_open\` with package \`com.spotify.music\`.
-2. Confirm launch: \`phone_shell\` → \`dumpsys window | grep mCurrentFocus\`
-   should show \`com.spotify.music.MainActivity\`.
-3. Landing: Home with \`All / Music / Podcasts\` filters, quick-pick cards, and
-   a 4-tab bottom bar (Home / Search / Your Library / Create).
+\`phone_open\` with package \`com.spotify.music\`; confirm with
+\`dumpsys window | grep mCurrentFocus\` showing
+\`com.spotify.music.MainActivity\`.
 
 ## Fast path — deep links (default)
 
-Deep links are the PRIMARY way to task Spotify — they bypass the flaky
-search-typing path entirely (verified working):
+Deep links are the PRIMARY way to task Spotify; typing is the fallback.
 
-1. **Resolve the URI with a web search**: \`websearch\` for
-   \`<song> <artist> open.spotify.com/track\` — or \`/album\`, \`/playlist\`,
-   \`/artist\` for those — the canonical result URL carries the ID
-   (e.g. greedy = \`open.spotify.com/track/6wCv0m87EJ6kYGUi5c0kbG\`). Pick
-   the entry with the most plays, not a remix/compilation.
-2. **Open the track**: \`phone_adb\` →
+1. **Get the track ID**: use a documented ID if a skill/doc already carries
+   it (e.g. greedy = \`spotify:track:6wCv0m87EJ6kYGUi5c0kbG\`); otherwise
+   \`websearch\` for \`<song> <artist> open.spotify.com/track\` (or /album,
+   /playlist, /artist) and read the ID from the result URL — the canonical
+   entry (most plays), not a remix/compilation.
+2. **Open the track**: \`phone_shell\` →
    \`am start -a android.intent.action.VIEW -d "spotify:track:<ID>" com.spotify.music\`.
-   The app navigates to the track's album context.
-3. **Or search directly**: \`spotify:search:<query>\` (URL-encode spaces as
-   %20) — opens Search with the query pre-filled AND results already
-   executed. No typing needed.
-4. **Deep links do NOT auto-play** — they pause current playback and land on
-   a page. \`phone_dump_ui\`, tap the track row or the Play button
-   (\`desc="Play"\`), then verify.
+   The link AUTO-PLAYS the track and lands on its album context.
+3. **Or search directly**: \`spotify:search:<query>\` (spaces as %20) opens
+   Search with the query pre-filled and results already executed — zero
+   keystrokes.
+
+## Verify playback — in dumpsys, never in pixels
+
+- \`spotify:track:\` deep links AUTO-PLAY. \`phone_dump_ui\` and
+  \`phone_screenshot\` pause media while capturing (the header notes it), so
+  a Paused read right after a capture is YOUR artifact. Confirm playback by
+  reading \`dumpsys media_session | grep state=PlaybackState\` with NO
+  capture in between; if it reads Paused, sample a SECOND time (no capture)
+  — still Paused across two clean samples, then \`phone_media play\`.
+- \`dumpsys media_session --active\` gives the authoritative PLAYING/PAUSED
+  + the ACTUAL track title. Report the title, not the intent — a mis-tap can
+  land on the wrong row (title track ≠ target track).
+- Play/pause/next: \`phone_media\`. Repeat mode has NO shell API — set it in
+  the now-playing UI and verify behaviorally (track position resets) or at
+  full-res, not from a single icon read.
 
 ## Manual fallback — search by typing
 
-> **STOP**: if you are about to type into Spotify's search field, don't —
-> use a deep link instead (\`spotify:search:<query>\` or a resolved track
-> URI above). Typing is the flaky path. Only type when deep links failed
-> (e.g. websearch found nothing) or a URI genuinely can't express the
-> destination.
+> Use this only when deep links failed or can't express the destination.
 
 1. Tap **Search** (\`desc="Search, Tab 2 of 4"\`, bottom bar).
-2. Tap the search field, then \`phone_type\` (ASCII; transliterate non-English
-   titles). Typing may silently fail with the stock IME — if the field shows
-   no text, switch IME (\`ime set com.android.adbkeyboard/.AdbIME\`), tap the
-   field again, and send \`am broadcast -a ADB_INPUT_TEXT --es msg <query>\`;
-   restore the old IME afterwards.
-3. Tap the matching top result (song or album card).
-4. In an album: the FIRST track is NOT necessarily the target — the title
-   track often sits first while the requested song is later in the list.
-   Scroll (\`phone_swipe\` up) until the right title appears, then tap its
-   row.
-
-## Verify playback — never assume
-
-- \`phone_dump_ui\` now survives Spotify's animating screens (the dump pauses
-  media briefly and resumes it; the header notes it when it happens). Still,
-  if the dump fails, don't retry — screenshot + vision.
-- Confirmation of playback: the playing row is highlighted (green), a pause
-  icon is visible, and the mini player shows the title + connected output
-  device (e.g. a Bluetooth speaker). Report the ACTUAL title playing, not the
-  one you intended — tapping the wrong row happens (title track ≠ target
-  track).
-- \`phone_shell\` → \`dumpsys media_session | grep state=PlaybackState\`
-  reports PLAYING/PAUSED definitively.
-- Play/pause/next control: \`phone_media\` (cmd media_session dispatch) —
-  reaches the session even when another app has focus.
-- Repeat mode (loop) has NO shell API — it's app-private. Set it in the
-  now-playing UI and verify by watching the track position reset (or the
-  repeat icon at full-res) rather than trusting a single icon read.
+2. Tap the search field, \`phone_type\` (ASCII; transliterate non-English
+   titles). If the field shows no text, \`ime set
+   com.android.adbkeyboard/.AdbIME\`, re-tap the field,
+   \`am broadcast -a ADB_INPUT_TEXT --es msg <query>\`, restore the old IME.
+3. Tap the matching top result. In an album the FIRST track is NOT
+   necessarily the target — the title track often sits first while the
+   requested song is later. Scroll until the right title appears, then tap
+   its row.
 
 ## When it misbehaves
 
-- **Dump fails**: don't retry it — screenshot + vision from the start.
+- **Dump fails on the now-playing screen**: don't retry — screenshot +
+  vision.
 - **Deep link lands on the album, not the track**: normal — tap the track
   row or Play.
-- **Deep link leaves music paused**: also normal — resume by tapping Play or
-  the row.
-- **Wrong track playing**: tap the correct row; re-verify via screenshot.
+- **Wrong track playing**: tap the correct row; confirm via
+  \`dumpsys media_session --active\` metadata.
 - **No result found**: broaden the query (artist + song name), try the
-  album card, or the artist page (\`desc="Navigates to more content from this
-  artist"\`).
+  album card, or the artist page (\`desc="Navigates to more content from
+  this artist"\`).
 - **Not signed in / ad break**: a premium wall may block playback — tell the
-  user rather than retrying blindly.
-- **Vision misreads titles**: cross-check artist names from the dump (they
-  usually survive) against the known tracklist.
-- **No change after an action**: do NOT repeat it — screenshot, check
-  \`phone_logcat\`, reconsider.`,
+  user rather than retrying blindly.`,
   }),
   makeSkill({
     id: "phone-call",
@@ -420,14 +447,14 @@ search-typing path entirely (verified working):
       "Make phone calls from the user's Android phone via the mobile-use tools — find contacts by name, confirm the right number, dial, verify the call connects, and hang up. Use whenever the user asks to call someone, dial a number, or end a call.",
     content: `# Phone Call Automation (via mobile-use)
 
-The phone must be connected: check \`phone_devices\` first; if none, guide the
-user to \`/phone-connect\` in the TUI or plug in via USB.
+Loaded after \`mobile-use\` — its connect / look-act-verify rules are in
+force.
 
 ## Find the contact — query the database, don't browse the UI
 
 1. List contacts: \`phone_shell\` →
-   \`content query --uri content://com.android.contacts/contacts --projection _id:display_name\`.
-   Filter for the name (\`| grep -i <name>\`).
+   \`content query --uri content://com.android.contacts/contacts --projection _id:display_name\`,
+   filter with \`| grep -i <name>\`.
 2. Get numbers: \`phone_shell\` →
    \`content query --uri content://com.android.contacts/data/phones --projection display_name:data1:data2\`
    — \`data1\` is the number (E.164, e.g. +14155550123), \`data2=2\` is
@@ -438,14 +465,14 @@ user to \`/phone-connect\` in the TUI or plug in via USB.
 
 ## Dial
 
-1. Place the call: \`phone_adb\` →
+1. Place the call: \`phone_shell\` →
    \`am start -a android.intent.action.CALL -d tel:<number>\`.
 2. **CALL can fail from the shell** (SecurityException — uid 2000 lacks
    CALL_PHONE). If the output mentions SecurityException, fall back to
    \`am start -a android.intent.action.DIAL -d tel:<number>\` (pre-fills the
    dialer), then \`phone_tap\` the call button — and tell the user the call
    needed a manual confirm.
-3. Verify: \`phone_dump_ui\` — focus should be
+3. Verify: focus should be
    \`com.samsung.android.incallui/...InCallActivity\` (Samsung) showing
    \`Calling…\` + contact name + number. Report the name and number you
    dialed.
@@ -471,8 +498,43 @@ user to \`/phone-connect\` in the TUI or plug in via USB.
   it doesn't block dialing, just delays connect; wait a few seconds before
   reporting "not connected".
 - **Wrong contact tapped**: you were supposed to confirm first — back out,
-  re-query, and ask.
-- **No change after an action**: do NOT repeat it — re-dump, check
-  \`phone_logcat\`, reconsider.`,
+  re-query, and ask.`,
+  }),
+  makeSkill({
+    id: "github",
+    name: "github",
+    description:
+      "Automate GitHub on the user's Android phone via the mobile-use tools — open a repo, star or unstar it, and verify. Use whenever the user asks to star or unstar a repository, open a GitHub repo, or check a repo page.",
+    content: `# GitHub Automation (via mobile-use)
+
+Loaded after \`mobile-use\` — its connect / look-act-verify / deep-link
+rules are in force.
+
+## Open a repo — deep link first
+
+1. \`phone_shell\` →
+   \`am start -a android.intent.action.VIEW -d "https://github.com/<owner>/<repo>" com.github.android\`.
+   If no GitHub app is installed, drop the package — the intent opens the
+   browser instead.
+2. Confirm focus and find the Star button: \`phone_dump_ui\` — GitHub's
+   native views expose \`text="Star"\` / \`desc="Star"\` in the a11y tree.
+   Repo pages also show owner, name, description and the star count.
+
+## Star, then unstar
+
+1. Tap **Star** (\`text="Star"\`). Verify it flips to \`Starred\` (filled
+   icon, label changes) before moving on.
+2. To unstar: tap **Starred** again. Verify it flips back to \`Star\`.
+3. Star→unstar round-trips notify the repo owner — do them in the requested
+   order and verify each flip; a claimed star that never flipped is a
+   failure, not a result.
+
+## When it misbehaves
+
+- **Not signed in**: a sign-in wall blocks the Star — tell the user.
+- **Star count ambiguous**: GitHub's own star count may lag; judge by the
+   Star/Starred label flip, not the count.
+- **Stale dump**: confirm focus (\`dumpsys window | grep mCurrentFocus\`)
+   before tapping.`,
   }),
 ]

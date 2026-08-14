@@ -2,6 +2,8 @@
 
 Control an Android phone from OpenCode — with a **live phone screen in the TUI sidebar**, full agent tooling, and a built-in phone-vision subagent.
 
+![OpenCode TUI with the live phone sidebar showing Spotify playing greedy](docs/demo.png)
+
 ## What it does
 
 - **Live sidebar screen** — the phone's display renders in the TUI sidebar (~36×30 cells via the terminal image protocol) and updates when the screen changes. Click it to open an enlarged full-resolution view.
@@ -13,6 +15,7 @@ Control an Android phone from OpenCode — with a **live phone screen in the TUI
   - `camera` — front/rear via dump descs, take photos, pull them to the laptop
   - `spotify` — play tracks via deep links (websearch → track ID → intent)
   - `phone-call` — contacts DB lookup, confirm duplicates, dial, hang up
+  - `github` — open repos, star / unstar, verify the label flip
 - **`phone-vision` subagent** — a bundled vision agent (MiMo V2.5 Free) that describes phone screenshots when the active model can't see images.
 - **Remote access** — pair once over Tailscale (`/phone-connect-remote`) and the phone works from anywhere; auto-reconnects.
 - **`/phone-connect`** — guided wireless pairing in the TUI; **`/phone-disconnect`** turns off wireless debugging on the device so the disconnect actually sticks.
